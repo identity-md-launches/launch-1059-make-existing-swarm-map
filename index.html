@@ -20,9 +20,7 @@
   .tab.on { background:rgba(76,195,255,.14); border-color:rgba(76,195,255,.5); box-shadow:0 0 12px rgba(76,195,255,.25); }
   button, input, select { background:rgba(20,28,50,.8); color:var(--fg); border:1px solid var(--line); border-radius:8px; padding:6px 10px; font:inherit; font-size:12px; }
   button { cursor:pointer; } button:hover { border-color:rgba(76,195,255,.6); box-shadow:0 0 10px rgba(76,195,255,.25); }
-  button.on { background:rgba(255,92,240,.16); border-color:rgba(255,92,240,.6); }
   .dot { width:8px; height:8px; border-radius:50%; background:#39ff9f; box-shadow:0 0 10px #39ff9f; display:inline-block; margin-right:6px; animation:bl 1.6s infinite; }
-  .dot.rp { background:#ff5cf0; box-shadow:0 0 10px #ff5cf0; }
   @keyframes bl { 50% { opacity:.35; } }
   #stats { top:72px; left:12px; width:250px; padding:12px 14px; }
   .k { color:var(--mut); font-size:11px; text-transform:uppercase; letter-spacing:.08em; }
@@ -54,9 +52,8 @@
   #loading { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; flex-direction:column; gap:10px; font-size:13px; color:var(--mut); letter-spacing:.2em; text-transform:uppercase; pointer-events:none; }
   #loading .ring { width:46px; height:46px; border-radius:50%; border:2px solid rgba(76,195,255,.2); border-top-color:#4cc3ff; animation:sp 1s linear infinite; box-shadow:0 0 20px rgba(76,195,255,.3); }
   @keyframes sp { to { transform:rotate(360deg); } }
-  #rpBar { position:fixed; left:50%; transform:translateX(-50%); top:70px; width:360px; height:4px; border-radius:2px; background:rgba(255,255,255,.08); display:none; overflow:hidden; }
-  #rpBar i { display:block; height:100%; width:0; background:linear-gradient(90deg,#4cc3ff,#ff5cf0); box-shadow:0 0 10px #ff5cf0; }
-  #rpLbl { position:fixed; left:50%; transform:translateX(-50%); top:78px; font-size:11px; color:var(--mut); letter-spacing:.1em; display:none; }
+  #rpcStatus { position:fixed; top:64px; left:50%; transform:translateX(-50%); z-index:31; color:var(--gold); background:#0a0e1c; border-radius:8px; font-size:12px; padding:4px 8px; pointer-events:none; }
+  #rpcStatus:empty { padding:0; }
   [hidden] { display:none !important; }
   .mobile-only { display:none; }
   #controls, #sheet, #sheetBody { display:contents; }
@@ -78,7 +75,6 @@
     .dot { width:6px; height:6px; margin-right:4px; box-shadow:0 0 5px var(--l1); }
     button, input, select { min-height:44px; min-width:44px; font-size:12px; }
     input, select { font-size:16px; }
-    #btnReplay { padding:6px 8px; white-space:nowrap; }
     #btnMenu { padding:6px 8px; }
     #controls { display:none; position:fixed; top:calc(var(--view-top) + var(--top-edge) + 60px); left:calc(var(--view-left) + var(--edge-left)); width:calc(var(--view-width) - var(--edge-left) - var(--edge-right)); max-height:calc(var(--view-height) - var(--top-edge) - var(--bottom-edge) - var(--sheet-height) - 68px); overflow:auto; overscroll-behavior:contain; padding:12px; border:1px solid var(--line); border-radius:12px; background:var(--mobile-surface); box-shadow:0 8px 24px rgba(0,0,0,.4); }
     #controls.open { display:grid; grid-template-columns:1fr auto; gap:8px 12px; align-items:center; }
@@ -116,8 +112,9 @@
     #tip img { width:44px; height:44px; }
     #tipClose { position:absolute; top:4px; right:4px; border:0; background:transparent; font-size:20px; }
     #tip .traits { font-size:12px !important; }
-    #rpBar { top:calc(var(--view-top) + var(--top-edge) + 56px); left:calc(var(--view-left) + var(--edge-left)); transform:none; width:calc(var(--view-width) - var(--edge-left) - var(--edge-right)); }
-    #rpLbl { top:calc(var(--view-top) + var(--top-edge) + 64px); left:calc(var(--view-left) + var(--view-width) / 2); white-space:nowrap; font-size:12px; letter-spacing:0; }
+    #rpcStatus { top:calc(var(--view-top) + var(--top-edge) + 56px); max-width:calc(var(--view-width) - 16px); width:max-content; }
+    body:has(#rpcStatus:not(:empty)) #controls { top:calc(var(--view-top) + var(--top-edge) + 88px); max-height:calc(var(--view-height) - var(--top-edge) - var(--bottom-edge) - var(--sheet-height) - 96px); }
+    body:has(#rpcStatus:not(:empty)) #tip { max-height:calc(var(--view-height) - var(--top-edge) - var(--bottom-edge) - var(--sheet-height) - 104px); }
     #loading { padding:80px 20px; text-align:center; font-size:12px; letter-spacing:.06em; overflow-wrap:anywhere; }
     @media (max-height:500px) { #sheet.expanded { max-height:calc(var(--view-height) * .58); } }
     @media (prefers-reduced-motion:reduce) { .dot, #loading .ring { animation:none; } }
@@ -128,6 +125,8 @@
 <canvas id="c" tabindex="0" aria-label="Swarm map. Arrow keys pan, plus and minus zoom, Enter fits. On mobile, N selects the next Pepe. On touch, drag to pan, pinch to zoom, double-tap to fit; tap a Pepe for details."></canvas>
 <div id="loading"><div class="ring"></div><div id="loadMsg">connecting to the swarm…</div></div>
 
+<div id="rpcStatus" role="status" aria-live="polite" aria-atomic="true"></div>
+
 <div id="top" class="glass">
   <h1>Swarm map</h1>
   <a class="tab on desktop-only" href="./">Swarm map</a>
@@ -135,11 +134,8 @@
   <span id="mode" style="font-size:12px"><span class="dot"></span>LIVE</span>
   <span class="mut desktop-only" id="blk" style="font-size:12px;color:var(--mut)"></span>
   <span class="sp"></span>
-  <button id="btnReplay" title="Replay every activation, upgrade, exit and swap since launch, sped up">▶ Replay from launch</button>
   <button id="btnMenu" class="mobile-only" aria-expanded="false" aria-controls="controls">Menu</button>
   <div id="controls">
-  <label class="mobile-only" for="rpSpeed">Replay length</label>
-  <select id="rpSpeed" aria-label="Replay length" title="Replay length"><option value="45">45s</option><option value="90" selected>90s</option><option value="180">3 min</option></select>
   <label class="mobile-only" id="walletLabel" for="hlAddr">Highlight wallet</label>
   <input id="hlAddr" aria-label="Highlight wallet" aria-describedby="walletError" placeholder="highlight a wallet 0x… (empty = none)" size="22" autocomplete="off" spellcheck="false" autocapitalize="off">
   <p id="walletError" class="mobile-only" role="status" hidden></p>
@@ -178,7 +174,7 @@
 </div>
 
 <div id="lb" class="glass"><h3>Top holders · by weight</h3><div id="lbList"></div></div>
-<div id="tick" class="glass"><h3>Live events</h3><div id="tickList"></div></div>
+<div id="tick" class="glass"><h3>Live events</h3><div id="tickList"><span id="eventEmpty" style="color:var(--mut)">New events appear here while you watch.</span></div></div>
   </div>
   </div>
 </div>
@@ -190,7 +186,6 @@
   <span style="color:var(--mut)">brighter = more pending ETH · center = OG pool → distributor · right edge = auction portal · <span class="desktop-only">scroll to zoom, drag to pan</span><span class="mobile-only">pinch to zoom, drag to pan, double-tap to fit</span></span>
 </div>
 <div id="tip" class="glass"></div>
-<div id="rpBar"><i></i></div><div id="rpLbl"></div>
 
 <script src="ethers.umd.min.js"></script>
 <script src="swarm.js"></script>

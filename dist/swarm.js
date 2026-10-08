@@ -9,7 +9,7 @@ const A = {
   CL: '0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419',
 };
 const POOL_ID = '0x5f95e64cf8e8f4e4376c1d97b5959dc479abf7b191ba0b286faeb2ec4180a2f9';
-const DEPLOY_BLOCK = 26147432, LOG_CHUNK = 5000, POLL_MS = 12000, EXIT_LOCK = 86400;
+const LOG_CHUNK = 50, POLL_MS = 15000, PRICE_MS = 300000, EXIT_LOCK = 86400;
 const WEIGHT = [0, 1, 2, 4];
 const params = new URLSearchParams(location.search);
 // highlighted wallet: ?addr=0x… wins, else the last one picked on this browser, else none
@@ -28,7 +28,7 @@ const iDist = new ethers.Interface([
   'event RewardsReceived(uint256 normal, uint256 surplus)',
 ]);
 const iPM = new ethers.Interface(['event Swap(bytes32 indexed id, address indexed sender, int128 amount0, int128 amount1, uint160 sqrtPriceX96, uint128 liquidity, int24 tick, uint24 fee)']);
-const iSpepe = new ethers.Interface(['function ownerOf(uint256) view returns (address)', 'function tokenURI(uint256) view returns (string)']);
+const iSpepe = new ethers.Interface(['function totalMinted() view returns (uint256)', 'function ownerOf(uint256) view returns (address)', 'function tokenURI(uint256) view returns (string)']);
 const iMC = new ethers.Interface([
   'function aggregate3((address target,bool allowFailure,bytes callData)[] calls) payable returns ((bool success,bytes returnData)[])',
   'function getEthBalance(address) view returns (uint256)', 'function getCurrentBlockTimestamp() view returns (uint256)',
@@ -39,36 +39,66 @@ const DIST_TOPICS = ['Activated', 'Upgraded', 'Exited', 'RewardsReceived'].map((
 const SWAP_TOPIC = iPM.getEvent('Swap').topicHash;
 
 // ---------- rpc ----------
-let rp = null;
-async function getRP() {
-  if (rp) return rp;
-  for (const url of RPCS) {
-    try {
-      const p = new ethers.JsonRpcProvider(url, 1, { staticNetwork: ethers.Network.from(1), batchMaxCount: 1 });
-      await Promise.race([p.getBlockNumber(), new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 6000))]);
-      rp = p; return rp;
-    } catch (e) { console.warn('RPC failed', url, e?.message); }
-  }
-  throw new Error('No public RPC reachable');
+// One transport for state, logs and art: no provider background retries or probes.
+let rpcIndex = 0, rpcId = 0, failures = 0, retryAt = 0, nextRequestAt = 0;
+let rpcTail = Promise.resolve(), activeRequest = null;
+const isHidden = () => document.visibilityState === 'hidden';
+const pauseError = () => new Error('RPC paused');
+const rpcNote = (message) => { $('rpcStatus').textContent = message; };
+function deferRPC(error) {
+  const limited = /429|rate.?limit|too many|quota|compute units|request limit|limit exceeded|-32005/i.test(String(error?.message || error));
+  failures++;
+  retryAt = Date.now() + Math.min(60000, POLL_MS * 2 ** Math.min(failures - 1, 2));
+  rpcIndex = (rpcIndex + 1) % RPCS.length;
+  rpcNote(limited ? 'RPC busy, retrying' : 'RPC unavailable, retrying');
 }
-async function rpcSwap() { const cur = rp?._getConnection?.().url; rp = null; const i = RPCS.indexOf(cur); if (i >= 0 && RPCS.length > 1) RPCS.push(RPCS.splice(i, 1)[0]); return getRP(); }
-async function multicall(calls, chunkSize = 300) {
-  let p = await getRP(); const out = [];
-  for (let i = 0; i < calls.length; i += chunkSize) {
-    const chunk = calls.slice(i, i + chunkSize);
-    const data = iMC.encodeFunctionData('aggregate3', [chunk.map(([t, f, fn, a]) => ({ target: t, allowFailure: true, callData: f.encodeFunctionData(fn, a) }))]);
-    let raw; try { raw = await p.call({ to: A.MULTICALL, data }); } catch { p = await rpcSwap(); raw = await p.call({ to: A.MULTICALL, data }); }
-    const [res] = iMC.decodeFunctionResult('aggregate3', raw);
-    res.forEach((r, j) => { const [, f, fn] = chunk[j]; if (!r.success) return out.push(null); try { const d = f.decodeFunctionResult(fn, r.returnData); out.push(d.length === 1 ? d[0] : d); } catch { out.push(null); } });
-  }
-  return out;
+async function requestRPC(method, args) {
+  // Serialize and pace HTTP requests, including separate image batches.
+  const run = rpcTail.then(async () => {
+    if (isHidden() || Date.now() < retryAt) throw pauseError();
+    const delay = nextRequestAt - Date.now();
+    if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+    if (isHidden() || Date.now() < retryAt) throw pauseError();
+    const controller = new AbortController(); activeRequest = controller;
+    const timeout = setTimeout(() => controller.abort(), 20000);
+    try {
+      const response = await fetch(RPCS[rpcIndex], {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: controller.signal,
+        body: JSON.stringify({ jsonrpc: '2.0', id: ++rpcId, method, params: args }),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const payload = await response.json();
+      if (payload.error) throw new Error(`${payload.error.code}: ${payload.error.message}`);
+      if (payload.result == null) throw new Error('Missing RPC result');
+      failures = 0; retryAt = 0; rpcNote('');
+      return payload.result;
+    } catch (error) {
+      if (!isHidden()) deferRPC(error);
+      throw error;
+    } finally {
+      clearTimeout(timeout); activeRequest = null; nextRequestAt = Date.now() + 350;
+    }
+  });
+  rpcTail = run.then(() => undefined, () => undefined);
+  return run;
+}
+async function multicall(calls, block = 'latest') {
+  const data = iMC.encodeFunctionData('aggregate3', [calls.map(([target, iface, fn, args]) => ({ target, allowFailure: true, callData: iface.encodeFunctionData(fn, args) }))]);
+  const raw = await requestRPC('eth_call', [{ to: A.MULTICALL, data }, block]);
+  const [results] = iMC.decodeFunctionResult('aggregate3', raw);
+  if (results.length !== calls.length) throw new Error('Incomplete Multicall result');
+  return results.map((r, index) => {
+    if (!r.success) return null;
+    const [, iface, fn] = calls[index];
+    try { const d = iface.decodeFunctionResult(fn, r.returnData); return d.length === 1 ? d[0] : d; }
+    catch { return null; }
+  });
 }
 async function getLogsChunked(filter, from, to) {
-  let p = await getRP(); const all = [];
+  const all = [];
   for (let a = from; a <= to; a += LOG_CHUNK) {
-    const q = { ...filter, fromBlock: a, toBlock: Math.min(to, a + LOG_CHUNK - 1) };
-    let logs; try { logs = await p.getLogs(q); } catch { p = await rpcSwap(); logs = await p.getLogs(q); }
-    all.push(...logs);
+    const logs = await requestRPC('eth_getLogs', [{ ...filter, fromBlock: ethers.toQuantity(a), toBlock: ethers.toQuantity(Math.min(to, a + LOG_CHUNK - 1)) }]);
+    all.push(...logs.map((l) => ({ ...l, blockNumber: Number(l.blockNumber), index: Number(l.logIndex) })));
   }
   return all;
 }
@@ -94,9 +124,8 @@ const hubs = new Map();    // owner -> hub
 const parts = [];          // particles
 const rings = [];          // expanding flash rings
 const floats = [];         // floating texts
-const events = [];         // all decoded events (for replay), sorted
-const pendingByTx = new Map();
-let G = {}, head = 0, scanned = DEPLOY_BLOCK - 1, mode = 'loading', firstLoaded = false;
+let G = {}, head = 0, scanned = 0, mode = 'loading', firstLoaded = false;
+let lastPriceAt = -Infinity, resnapshot = false;
 let pendMax = 1e-9;
 const imgCache = new Map(); // id -> {img, sprite, url}
 const meta = new Map();     // id -> attributes
@@ -140,9 +169,6 @@ function measureChrome() {
   mobileInsets.left = top.left - canvasBox.left + 12; mobileInsets.right = canvasBox.right - top.right + 12;
   mobileInsets.top = top.bottom - canvasBox.top + 20; mobileInsets.bottom = canvasBox.bottom - sheet.top + 12;
 }
-function updateReplayLabel() {
-  $('btnReplay').textContent = mode === 'replay' ? (mobile ? '■ Stop' : '■ Stop replay') : (mobile ? '▶ Replay' : '▶ Replay from launch');
-}
 function setMenu(open, restoreFocus = false) {
   menuOpen = mobile && open;
   $('controls').classList.toggle('open', menuOpen);
@@ -176,7 +202,7 @@ function applyResponsiveLayout() {
   mobile = mobileQuery.matches;
   if (mobile) $('stats').append($('legend')); else legendHome.after($('legend'));
   selectedId = null; $('tip').style.display = 'none';
-  setMenu(false); setSheet(false); updateReplayLabel(); resize(); measureChrome(); renderHud();
+  setMenu(false); setSheet(false); resize(); measureChrome(); renderHud();
 }
 $('btnMenu').addEventListener('click', () => setMenu(!menuOpen));
 $('sheetToggle').addEventListener('click', () => setSheet(!sheetOpen));
@@ -292,7 +318,6 @@ function addNode(id, owner, level, opts = {}) {
   n = { id, owner: owner.toLowerCase(), level, pending: 0, last: 0, x: opts.fromCore ? 0 : h.x, y: opts.fromCore ? 0 : h.y, r: 0, flash: opts.quiet ? 0 : 1, age: 0, slot: 0, hit: 0 };
   nodes.set(id, n); relayout();
   if (!opts.quiet) { rings.push({ node: n, t: 0, dur: 1.2, c: COL[level], max: 46 }); }
-  if (!opts.quiet) loadImages([id]);
   return n;
 }
 function upgradeNode(id, level, owner) {
@@ -318,8 +343,8 @@ function streamToNodes(ethAmt) {
   const list = [...nodes.values()].filter((n) => !n.exiting);
   if (!list.length) return;
   const totalW = list.reduce((s, n) => s + WEIGHT[n.level], 0) || 1;
-  const N = Math.round(Math.min(mode === 'replay' ? 70 : 220, Math.max(mode === 'replay' ? 14 : 28, 30 + Math.sqrt(ethAmt * 1e4) * 14)));
-  if (parts.length > (mode === 'replay' ? 500 : 1600)) return;
+  const N = Math.round(Math.min(220, Math.max(28, 30 + Math.sqrt(ethAmt * 1e4) * 14)));
+  if (parts.length > 1600) return;
   // weighted pick by node weight
   const cum = []; let acc = 0; for (const n of list) { acc += WEIGHT[n.level] / totalW; cum.push(acc); }
   for (let i = 0; i < (mobile ? Math.min(N, 32) : N) && parts.length < (mobile ? 120 : 2200); i++) {
@@ -332,8 +357,8 @@ function streamToNodes(ethAmt) {
 // inbound sparks from the screen edge into the core on a buy
 function inbound(ethAmt) {
   if (mobile && motionQuery.matches) return;
-  if (parts.length > (mode === 'replay' ? 500 : 1600)) return;
-  const n = Math.min(mobile ? Math.min(10, 120 - parts.length) : mode === 'replay' ? 16 : 40, 6 + Math.round(ethAmt * 60));
+  if (parts.length > 1600) return;
+  const n = Math.min(mobile ? Math.min(10, 120 - parts.length) : 40, 6 + Math.round(ethAmt * 60));
   const R = Math.max(W, H) / cam.s * 0.7;
   for (let i = 0; i < n; i++) { const a = Math.random() * 6.283; parts.push({ sx: Math.cos(a) * R, sy: Math.sin(a) * R, tx: 0, ty: 0, t: -Math.random() * 0.4, dur: 0.6 + Math.random() * 0.35, bend: (Math.random() - 0.5) * 0.5, c: COL.core, size: 8 + Math.random() * 5, inb: true }); }
 }
@@ -356,103 +381,155 @@ function decodeLog(l) {
 }
 async function fetchEvents(from, to) {
   if (to < from) return [];
-  const [d, s] = await Promise.all([
-    getLogsChunked({ address: A.DIST, topics: [DIST_TOPICS] }, from, to),
-    getLogsChunked({ address: A.PM, topics: [SWAP_TOPIC, POOL_ID] }, from, to),
-  ]);
+  const d = await getLogsChunked({ address: A.DIST, topics: [DIST_TOPICS] }, from, to);
+  const s = await getLogsChunked({ address: A.PM, topics: [SWAP_TOPIC, POOL_ID] }, from, to);
   return [...d, ...s].map(decodeLog).filter(Boolean).sort((a, b) => a.block - b.block || a.idx - b.idx);
 }
-// apply an event to the visual state. animate=false for silent state building.
-function applyEvent(e, animate = true) {
-  if (e.type === 'act') addNode(e.id, e.owner, e.level, { quiet: !animate });
-  else if (e.type === 'up') { if (animate) upgradeNode(e.id, e.level, e.owner); else { const n = nodes.get(e.id); if (n) n.level = e.level; else addNode(e.id, e.owner, e.level, { quiet: true }); } }
-  else if (e.type === 'exit') { if (animate) exitNode(e.id); else nodes.delete(e.id); }
-  else if (e.type === 'swap') { if (animate) { corePulse(e.eth, e.buy); if (e.buy) inbound(e.eth); } if (e.sqrtP) { const s = Number(e.sqrtP) / 2 ** 96; G.ogPerEth = s * s; } }
-  else if (e.type === 'rew') { if (animate) setTimeout(() => streamToNodes(e.eth), mode === 'replay' ? 120 : 380); }
-  if (animate) pushTicker(e);
+// Snapshot owns node data; queued effects must never overwrite current levels/owners.
+function applyEvent(e) {
+  if (e.type === 'swap') { corePulse(e.eth, e.buy); if (e.buy) inbound(e.eth); }
+  else if (e.type === 'rew') setTimeout(() => streamToNodes(e.eth), 380);
+  pushTicker(e);
 }
 // ---------- ticker ----------
 const tickRows = [];
-function pushTicker(e, hist = false) {
+function pushTicker(e) {
   if (e.type === 'rew') { // merge into the swap row of the same tx
     const row = tickRows.find((r) => r.tx === e.tx && r.el);
     if (row) { const s = row.el.querySelector('.rw'); if (s) s.textContent = ` · ${e.eth < 0.0001 ? e.eth.toExponential(1) : e.eth.toFixed(5)} → Pepes`; }
     return;
   }
   const el = document.createElement('div'); el.className = 'ev';
-  const t = `<span class="t">${mode === 'replay' || hist ? '#' + e.block : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>`;
+  const t = `<span class="t">${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>`;
   let body = '';
-  if (e.type === 'swap' && e.agg) body = `<span class="tag ${e.buy ? 'buy' : 'sell'}">${e.agg}× SWAPS</span>${txLink(e.tx, `buys ${e.buyEth.toFixed(3)} · sells ${e.sellEth.toFixed(3)} ETH`)}<span class="rw" style="color:var(--gold)"></span>`;
-  else if (e.type === 'swap') body = `<span class="tag ${e.buy ? 'buy' : 'sell'}">${e.buy ? 'BUY' : 'SELL'}</span>${txLink(e.tx, `${e.eth.toFixed(4)} ETH ${e.buy ? '→' : '←'} ${fmtOG(e.og)} OG`)}<span class="rw" style="color:var(--gold)"></span>`;
+  if (e.type === 'swap') body = `<span class="tag ${e.buy ? 'buy' : 'sell'}">${e.buy ? 'BUY' : 'SELL'}</span>${txLink(e.tx, `${e.eth.toFixed(4)} ETH ${e.buy ? '→' : '←'} ${fmtOG(e.og)} OG`)}<span class="rw" style="color:var(--gold)"></span>`;
   else if (e.type === 'act') body = `<span class="tag act">ACTIVATE</span>${txLink(e.tx, `#${e.id} → L${e.level}`)} <span style="color:var(--mut)">${e.owner === HL ? '<b class="gold">you</b>' : short(e.owner)}</span>`;
   else if (e.type === 'up') body = `<span class="tag up">UPGRADE</span>${txLink(e.tx, `#${e.id} L${e.from}→L${e.level}`)} <span style="color:var(--mut)">${e.owner === HL ? '<b class="gold">you</b>' : short(e.owner)}</span>`;
   else if (e.type === 'exit') body = `<span class="tag exit">EXIT</span>${txLink(e.tx, `#${e.id} paid ${e.eth.toFixed(5)} ETH`)} <span style="color:var(--mut)">→ auction</span>`;
   el.innerHTML = t + body;
-  const list = $('tickList'); list.prepend(el); tickRows.unshift({ tx: e.tx, el });
+  const list = $('tickList'); $('eventEmpty')?.remove(); list.prepend(el); tickRows.unshift({ tx: e.tx, el });
   while (list.children.length > 14) list.lastChild.remove();
   if (tickRows.length > 40) tickRows.length = 40;
 }
 
 // ---------- chain state ----------
-async function refreshState() {
-  const ids = [...nodes.keys()].filter((id) => !nodes.get(id).exiting);
-  const n = ids.length;
+// The verified collection mints sequential IDs starting at 1 (MAX_SUPPLY 5000).
+// The distributor has no enumerable active-ID view. A supply preflight bounds one
+// active-ID discovery pass, then one atomic state Multicall. No event history.
+async function snapshotIds(block) {
+  const raw = await requestRPC('eth_call', [{ to: A.SPEPE, data: iSpepe.encodeFunctionData('totalMinted') }, block]);
+  const count = Number(iSpepe.decodeFunctionResult('totalMinted', raw)[0]);
+  if (!Number.isSafeInteger(count) || count < 0 || count > 5000) throw new Error('Invalid collection supply');
+  const active = [];
+  // Keep discovery calldata below common 1 MiB public-RPC body limits.
+  for (let first = 1; first <= count; first += 2000) {
+    const ids = Array.from({ length: Math.min(2000, count - first + 1) }, (_, i) => first + i);
+    const levels = await multicall(ids.map((id) => [A.DIST, iDist, 'level', [id]]), block);
+    levels.forEach((level, i) => {
+      if (level == null || Number(level) > 3) throw new Error('Incomplete active-ID discovery');
+      if (Number(level)) active.push(ids[i]);
+    });
+  }
+  return active;
+}
+async function readState(ids, block) {
+  const priceDue = Date.now() - lastPriceAt >= PRICE_MS;
+  // Set before sending, so even failed Chainlink reads cannot repeat within 5m.
+  if (priceDue) lastPriceAt = Date.now();
   const r = await multicall([
     ...ids.map((id) => [A.SPEPE, iSpepe, 'ownerOf', [id]]), ...ids.map((id) => [A.DIST, iDist, 'pending', [id]]),
     ...ids.map((id) => [A.DIST, iDist, 'lastActivation', [id]]), ...ids.map((id) => [A.DIST, iDist, 'level', [id]]),
     [A.DIST, iDist, 'totalWeight', []], [A.DIST, iDist, 'activePerLevel', [1]], [A.DIST, iDist, 'activePerLevel', [2]], [A.DIST, iDist, 'activePerLevel', [3]],
     [A.DIST, iDist, 'backlogLeft', []], [A.DIST, iDist, 'streamEnd', []], [A.DIST, iDist, 'unfundedFees', []], [A.MULTICALL, iMC, 'getEthBalance', [A.DIST]],
-    [A.STATEVIEW, iSV, 'getSlot0', [POOL_ID]], [A.CL, iCL, 'latestRoundData', []], [A.MULTICALL, iMC, 'getCurrentBlockTimestamp', []],
-  ]);
-  let sumPend = 0n; pendMax = 1e-9; let changed = false;
+    [A.STATEVIEW, iSV, 'getSlot0', [POOL_ID]], [A.MULTICALL, iMC, 'getCurrentBlockTimestamp', []],
+    ...(priceDue ? [[A.CL, iCL, 'latestRoundData', []]] : []),
+  ], block);
+  const n = ids.length, t = r.slice(4 * n), population = [];
+  if (t.slice(0, 8).some((v) => v == null) || t[9] == null) throw new Error('Incomplete distributor totals');
+  let sumPend = 0n, totalWeight = 0; const perLevel = [0, 0, 0];
   ids.forEach((id, i) => {
-    const nd = nodes.get(id); if (!nd) return;
-    const own = (r[i] || nd.owner).toLowerCase(); if (own !== nd.owner && own !== A.AUCTION.toLowerCase()) { nd.owner = own; changed = true; }
-    const p = r[n + i] ?? 0n; sumPend += p; nd.pending = nE(p); pendMax = Math.max(pendMax, nd.pending);
-    nd.last = Number(r[2 * n + i] ?? 0);
-    const lv = Number(r[3 * n + i] ?? nd.level); if (lv && lv !== nd.level && mode !== 'replay') { nd.level = lv; changed = true; }
+    const lv = r[3 * n + i];
+    if (lv == null) throw new Error('Incomplete Pepe level');
+    const level = Number(lv);
+    if (!level) return;
+    if (level > 3 || !r[i] || r[n + i] == null || r[2 * n + i] == null) throw new Error('Incomplete active Pepe');
+    const pending = r[n + i]; sumPend += pending; totalWeight += WEIGHT[level]; perLevel[level - 1]++;
+    population.push({ id, owner: r[i].toLowerCase(), level, pending: nE(pending), last: Number(r[2 * n + i]) });
   });
-  if (changed) relayout();
-  const t = r.slice(4 * n);
-  G = { ...G, tw: t[0], apl: [t[1], t[2], t[3]].map((x) => Number(x ?? 0)), backlog: t[4] ?? 0n, streamEnd: Number(t[5] ?? 0), unfunded: t[6] ?? 0n, bal: t[7], sumPend, ts: Number(t[10] ?? Date.now() / 1000), tsAt: Date.now() };
-  if (t[8]) { const s = Number(t[8][0]) / 2 ** 96; G.ogPerEth = s * s; }
-  if (t[9] && t[9][1] > 0n) G.usd = Number(t[9][1]) / 1e8;
-  renderHud();
+  if (BigInt(totalWeight) !== t[0] || perLevel.some((v, i) => BigInt(v) !== t[i + 1])) {
+    resnapshot = true; throw new Error('Population changed; refreshing snapshot');
+  }
+  const globals = { ogPerEth: G.ogPerEth, usd: G.usd, ...G, tw: t[0], apl: perLevel, backlog: t[4], streamEnd: Number(t[5]), unfunded: t[6], bal: t[7], sumPend, ts: Number(t[9]), tsAt: Date.now() };
+  if (t[8]) { const s = Number(t[8][0]) / 2 ** 96; globals.ogPerEth = s * s; }
+  if (priceDue && t[10]?.[1] > 0n) globals.usd = Number(t[10][1]) / 1e8;
+  return { population, globals };
 }
-// ---------- images (on-chain SVG in tokenURI) ----------
-const imgQueue = new Set(); let imgBusy = false;
-function loadImages(ids) { ids.forEach((id) => { if (!imgCache.has(id)) imgQueue.add(id); }); if (!imgBusy) pumpImages(); }
+function commitState(state) {
+  const active = new Set(state.population.map((n) => n.id));
+  for (const n of nodes.values()) if (!active.has(n.id)) exitNode(n.id);
+  pendMax = 1e-9;
+  for (const data of state.population) {
+    const existing = nodes.get(data.id);
+    if (existing && !existing.exiting && existing.level !== data.level) upgradeNode(data.id, data.level, data.owner);
+    const n = existing && !existing.exiting ? existing : addNode(data.id, data.owner, data.level, { quiet: !firstLoaded });
+    Object.assign(n, data); pendMax = Math.max(pendMax, data.pending);
+  }
+  G = state.globals; relayout(); renderHud();
+}
+// ---------- lazy images (on-chain SVG in tokenURI) ----------
+const imgQueue = new Set(), imgInFlight = new Set(), imgRetryAt = new Map();
+let imgBusy = false, imgTimer = 0;
+const imageKey = (id) => `swarm:1:${A.SPEPE.toLowerCase()}:image:${id}`;
+function acceptImage(id, uri) {
+  let j;
+  if (uri.startsWith('data:application/json;base64,')) j = JSON.parse(atob(uri.slice(29)));
+  else if (uri.startsWith('data:application/json')) j = JSON.parse(decodeURIComponent(uri.slice(uri.indexOf(',') + 1)));
+  else throw new Error('Unsupported metadata');
+  if (typeof j.image !== 'string' || !/^data:image\/(svg\+xml|png|gif|webp|jpeg)[;,]/i.test(j.image)) throw new Error('Inline images only');
+  meta.set(id, Array.isArray(j.attributes) ? j.attributes : []);
+  const img = new Image(); const ent = { img, url: j.image, sprite: null }; imgCache.set(id, ent);
+  img.onload = () => { const s = document.createElement('canvas'); s.width = s.height = 64; const g = s.getContext('2d'); g.imageSmoothingEnabled = false; g.beginPath(); g.arc(32, 32, 32, 0, 6.283); g.clip(); g.drawImage(img, 0, 0, 64, 64); ent.sprite = s; };
+  img.src = j.image;
+}
+function loadImages(ids) {
+  for (const id of ids) {
+    if (imgCache.has(id) || imgInFlight.has(id) || imgQueue.has(id) || Date.now() < (imgRetryAt.get(id) || 0)) continue;
+    const cached = lsGet(imageKey(id));
+    if (cached) { try { acceptImage(id, cached); continue; } catch { lsSet(imageKey(id), ''); } }
+    imgQueue.add(id);
+  }
+  scheduleImages();
+}
+function scheduleImages() {
+  if (imgBusy || imgTimer || !imgQueue.size || !firstLoaded || isHidden()) return;
+  imgTimer = window.setTimeout(() => { imgTimer = 0; pumpImages(); }, Math.max(350, retryAt - Date.now()));
+}
 async function pumpImages() {
-  imgBusy = true;
+  if (imgBusy || isHidden()) return;
+  // At most four tokenURI subcalls, in one HTTP request, globally.
+  const batch = [...imgQueue].filter((id) => nodes.has(id) && !nodes.get(id).exiting).slice(0, 4);
+  if (!batch.length) { imgQueue.clear(); return; }
+  batch.forEach((id) => { imgQueue.delete(id); imgInFlight.add(id); }); imgBusy = true;
   try {
-    while (imgQueue.size) {
-      const batch = [...imgQueue].slice(0, 25); batch.forEach((id) => imgQueue.delete(id));
-      const r = await multicall(batch.map((id) => [A.SPEPE, iSpepe, 'tokenURI', [id]]), 25);
-      batch.forEach((id, i) => {
-        const uri = r[i]; if (!uri) { imgCache.set(id, { failed: true }); return; }
-        try {
-          let j; if (uri.startsWith('data:application/json;base64,')) j = JSON.parse(atob(uri.slice(29))); else if (uri.startsWith('data:application/json')) j = JSON.parse(decodeURIComponent(uri.slice(uri.indexOf(',') + 1))); else { imgCache.set(id, { failed: true }); return; }
-          meta.set(id, j.attributes || []);
-          if (!j.image || !j.image.startsWith('data:')) { imgCache.set(id, { failed: true }); return; } // only inline images, never a remote fetch
-          const img = new Image(); const ent = { img, url: j.image }; imgCache.set(id, ent);
-          img.onload = () => { const s = document.createElement('canvas'); s.width = s.height = 64; const g = s.getContext('2d'); g.imageSmoothingEnabled = false; g.beginPath(); g.arc(32, 32, 32, 0, 6.283); g.clip(); g.drawImage(img, 0, 0, 64, 64); ent.sprite = s; };
-          img.src = j.image;
-        } catch { imgCache.set(id, { failed: true }); }
-      });
-    }
-  } catch (e) { console.warn('images', e?.message); }
-  imgBusy = false;
+    const r = await multicall(batch.map((id) => [A.SPEPE, iSpepe, 'tokenURI', [id]]));
+    batch.forEach((id, i) => {
+      try { acceptImage(id, r[i]); lsSet(imageKey(id), r[i]); }
+      catch { imgRetryAt.set(id, Date.now() + 60000); }
+    });
+  } catch { batch.forEach((id) => imgQueue.add(id)); }
+  finally { batch.forEach((id) => imgInFlight.delete(id)); imgBusy = false; scheduleImages(); }
 }
 
 // ---------- HUD ----------
 function renderHud() {
   if (G.tw == null) return;
   const tw = Number(G.tw), active = G.apl.reduce((a, b) => a + b, 0);
+  const nodeCount = [...nodes.values()].filter((n) => !n.exiting).length;
   const back = G.sumPend + G.backlog;
-  $('mActive').textContent = active.toLocaleString('en-US') + (nodes.size !== active && mode === 'live' ? ' · syncing' : '');
+  $('mActive').textContent = active.toLocaleString('en-US') + (nodeCount !== active && mode === 'live' ? ' · syncing' : '');
   $('mWeight').textContent = tw.toLocaleString('en-US');
   $('mBack').textContent = fE(back, 4);
-  $('hActive').innerHTML = `${active} <small>${nodes.size !== active && mode === 'live' ? '(syncing)' : ''}</small>`;
+  $('hActive').innerHTML = `${active} <small>${nodeCount !== active && mode === 'live' ? '(syncing)' : ''}</small>`;
   $('hLevels').innerHTML = `<span class="l1">${G.apl[0]}</span> / <span class="l2">${G.apl[1]}</span> / <span class="l3">${G.apl[2]}</span>`;
   $('hWeight').textContent = tw.toLocaleString('en-US');
   const epw = tw ? nE(back) / tw : 0;
@@ -539,6 +616,7 @@ function frame(now) {
     const bright = 0.45 + 0.55 * Math.min(1, Math.sqrt(n.pending / pendMax));
     glow(x, y, r * (mobile ? 2.4 + n.flash + n.hit : 3.4 + n.flash * 3 + n.hit * 1.2), c, Math.min(1, bright * 0.75 + n.flash * 0.6 + n.hit * 0.3));
     if (me) glow(x, y, r * 2.3, COL.gold, 0.35 + 0.15 * Math.sin(T * 3 + n.id));
+    if (!n.exiting && x >= 0 && x <= W && y >= 0 && y <= H && r >= (mobile ? 10 : 5)) loadImages([n.id]);
     const im = imgCache.get(n.id);
     ctx.globalCompositeOperation = 'source-over';
     if (im?.sprite && r >= (mobile ? 10 : 5)) {
@@ -595,6 +673,7 @@ function frame(now) {
   const tip = $('tip');
   if (mobile) { hover = nodes.get(selectedId); if (hover?.exiting) { selectedId = null; hover = null; } }
   if (hover) {
+    loadImages([hover.id]);
     if (!mobile || tipNode !== hover || now - tipUpdated > 250) {
     tipNode = hover; tipUpdated = now;
     const n = hover, im = imgCache.get(n.id), chainNow = G.ts ? G.ts + (Date.now() - G.tsAt) / 1000 : Date.now() / 1000, unl = n.last ? n.last + EXIT_LOCK : 0;
@@ -709,102 +788,63 @@ if (HL) $('hlAddr').value = HL;
 $('hlAddr').addEventListener('change', () => { const v = $('hlAddr').value.trim(); const invalid = !!v && !ethers.isAddress(v); $('hlAddr').setAttribute('aria-invalid', String(invalid)); $('walletError').hidden = !invalid; $('walletError').textContent = invalid ? 'Enter a valid Ethereum wallet address, or clear the field.' : ''; if (!v) { HL = ''; lsSet('swarmHL', ''); renderHud(); } else if (!invalid) { HL = v.toLowerCase(); lsSet('swarmHL', HL); renderHud(); } });
 
 // ---------- live loop ----------
-let liveQueue = [];
+let liveQueue = [], pollTimer = 0, polling = false;
+function schedulePoll(delay = POLL_MS) {
+  clearTimeout(pollTimer);
+  if (isHidden()) return;
+  pollTimer = window.setTimeout(poll, Math.max(delay, retryAt - Date.now()));
+}
 async function poll() {
-  if (mode !== 'live') return;
+  if (polling || isHidden()) return;
+  polling = true;
   try {
-    const p = await getRP(); const h = await p.getBlockNumber();
-    if (h > scanned) {
-      const evs = await fetchEvents(scanned + 1, h); scanned = h; head = h;
-      events.push(...evs);
-      // spread the new events over the next poll window so bursts stay readable
+    // No new block means no logs, snapshot, or price read.
+    const h = Number(await requestRPC('eth_blockNumber', []));
+    if (!Number.isSafeInteger(h) || h <= 0) throw new Error('Invalid block number');
+    if (!firstLoaded || resnapshot || h < scanned) {
+      const block = ethers.toQuantity(h);
+      const ids = await snapshotIds(block);
+      const state = await readState(ids, block);
+      head = scanned = h; liveQueue = []; commitState(state); resnapshot = false;
+      if (!firstLoaded) {
+        let i = 0; for (const n of nodes.values()) { n.r = 0; n.flash = 0; setTimeout(() => { n.flash = 0.8; }, 200 + i++ * 18); }
+        firstLoaded = true; mode = 'live'; $('loading').style.display = 'none';
+      }
+    } else if (h > scanned) {
+      // Bound catch-up work after a long-hidden tab to one 50-block range/tick.
+      const to = Math.min(h, scanned + LOG_CHUNK), evs = await fetchEvents(scanned + 1, to);
+      const ids = new Set([...nodes.values()].filter((n) => !n.exiting).map((n) => n.id));
+      for (const e of evs) { if ('id' in e) { if (e.type === 'act' || e.type === 'up') ids.add(e.id); else if (e.type === 'exit') ids.delete(e.id); } }
+      const state = await readState([...ids], ethers.toQuantity(to));
+      // Cursor and rendered state commit together only after ALL reads succeed.
+      head = scanned = to; commitState(state);
       const spread = Math.min(POLL_MS * 0.8, Math.max(400, evs.length * 350));
       evs.forEach((e, i) => liveQueue.push({ e, at: performance.now() + (evs.length > 1 ? (i / (evs.length - 1)) * spread : 0) }));
     }
-    await refreshState();
-  } catch (e) { console.warn('poll failed', e?.message); }
-}
-setInterval(() => { // drain scheduled live events
-  const now = performance.now();
-  while (liveQueue.length && liveQueue[0].at <= now && mode === 'live') applyEvent(liveQueue.shift().e, true);
-  if (liveQueue.length && liveQueue.length % 7 === 0) renderHud();
-}, 50);
-
-// ---------- replay ----------
-let rp_ = null;
-function startReplay() {
-  if (mode === 'replay') return stopReplay();
-  if (!events.length) return;
-  mode = 'replay'; liveQueue = [];
-  nodes.clear(); hubs.clear(); parts.length = 0; rings.length = 0; floats.length = 0; $('tickList').innerHTML = ''; tickRows.length = 0;
-  const dur = Number($('rpSpeed').value) * 1000;
-  const b0 = DEPLOY_BLOCK, b1 = Math.max(head, events[events.length - 1].block);
-  rp_ = { t0: performance.now(), dur, b0, b1, i: 0 };
-  $('mode').innerHTML = '<span class="dot rp"></span>REPLAY'; $('btnReplay').textContent = '■ Stop replay'; $('btnReplay').classList.add('on');
-  updateReplayLabel(); selectedId = null;
-  $('rpBar').style.display = 'block'; $('rpLbl').style.display = 'block';
-}
-function stopReplay(finished) {
-  mode = 'live'; rp_ = null;
-  $('mode').innerHTML = '<span class="dot"></span>LIVE'; $('btnReplay').textContent = '▶ Replay from launch'; $('btnReplay').classList.remove('on');
-  updateReplayLabel(); selectedId = null;
-  $('rpBar').style.display = 'none'; $('rpLbl').style.display = 'none';
-  // rebuild exact current state from the full event list, then resync with the chain
-  nodes.clear(); hubs.clear();
-  for (const e of events) if (e.type === 'act' || e.type === 'up' || e.type === 'exit') applyEvent(e, false);
-  relayout(); refreshState().catch(() => {});
-  if (!finished) { $('tickList').innerHTML = ''; tickRows.length = 0; events.filter((e) => e.type !== 'rew').slice(-12).forEach((e) => pushTicker(e, true)); }
+    if (firstLoaded) $('loadMsg').textContent = '';
+  } catch (error) {
+    if (!isHidden()) {
+      if (Date.now() >= retryAt) deferRPC(error);
+      if (!firstLoaded) $('loadMsg').textContent = 'Waiting for chain data. Retrying automatically…';
+    }
+  } finally { polling = false; schedulePoll(); scheduleImages(); }
 }
 setInterval(() => {
-  if (mode !== 'replay' || !rp_) return;
-  const k = Math.min(1, (performance.now() - rp_.t0) / rp_.dur), blk = rp_.b0 + (rp_.b1 - rp_.b0) * k;
-  const acc = rp_.acc || (rp_.acc = { swaps: 0, buyEth: 0, sellEth: 0, og: 0, last: null, rew: 0, fired: 0 });
-  while (rp_.i < events.length && events[rp_.i].block <= blk) {
-    const e = events[rp_.i++];
-    if (e.type === 'swap') { acc.swaps++; if (e.buy) acc.buyEth += e.eth; else acc.sellEth += e.eth; acc.og += e.buy ? e.og : -e.og; acc.last = e; if (e.sqrtP) { const s = Number(e.sqrtP) / 2 ** 96; G.ogPerEth = s * s; } }
-    else if (e.type === 'rew') acc.rew += e.eth;
-    else applyEvent(e, true);
-  }
-  // swaps are aggregated and shown at most every 450ms so a busy stretch does not white out the screen
-  const nowMs = performance.now();
-  if (acc.last && (nowMs - acc.fired > 450 || k >= 1)) {
-    const buy = acc.buyEth >= acc.sellEth, eth = buy ? acc.buyEth : acc.sellEth;
-    corePulse(eth, buy); if (acc.buyEth > 0) inbound(acc.buyEth);
-    pushTicker(acc.swaps > 1 ? { ...acc.last, eth, buy, agg: acc.swaps, buyEth: acc.buyEth, sellEth: acc.sellEth } : acc.last);
-    if (acc.rew > 0) { const r = acc.rew; setTimeout(() => streamToNodes(r), 150); }
-    Object.assign(acc, { swaps: 0, buyEth: 0, sellEth: 0, og: 0, last: null, rew: 0, fired: nowMs });
-  }
-  /** @type {HTMLElement} */ ($('rpBar').firstElementChild).style.width = (k * 100).toFixed(1) + '%';
-  $('rpLbl').textContent = `block ${Math.floor(blk).toLocaleString('en-US')} · ${nodes.size} Pepes`;
-  if (k >= 1) stopReplay(true);
-}, 120);
-$('btnReplay').onclick = startReplay;
-if (params.get('replay')) setTimeout(startReplay, 1500);
-
-// ---------- boot ----------
-async function boot() {
-  requestAnimationFrame(frame);
-  try {
-    $('loadMsg').textContent = 'reading the chain…';
-    const p = await getRP(); head = await p.getBlockNumber();
-    $('loadMsg').textContent = `scanning events since block ${DEPLOY_BLOCK.toLocaleString('en-US')}…`;
-    const evs = await fetchEvents(DEPLOY_BLOCK, head); scanned = head; events.push(...evs);
-    for (const e of evs) if (e.type === 'act' || e.type === 'up' || e.type === 'exit') applyEvent(e, false);
-    // stagger an intro: every node pops in from its hub
-    let i = 0; for (const n of nodes.values()) { n.r = 0; n.flash = 0; setTimeout(() => { n.flash = 0.8; }, 200 + i++ * 18); }
-    relayout();
-    for (const e of evs) if (e.type === 'swap' && e.sqrtP) { const s = Number(e.sqrtP) / 2 ** 96; G.ogPerEth = s * s; }
-    evs.filter((e) => e.type !== 'rew').slice(-12).forEach((e) => pushTicker(e, true));
-    await refreshState();
-    loadImages([...nodes.keys()]);
-    mode = mode === 'replay' ? 'replay' : 'live'; firstLoaded = true;
-    $('loading').style.display = 'none';
-    window.__swarm = { ready: true, nodes: () => [...nodes.values()].filter((n) => !n.exiting).length, G: () => G, events: () => events.length, fps: () => fps,
-      view: () => ({ mobile, width: W, height: H, dpr: DPR, camera: { ...cam }, particles: parts.length, rings: rings.length, selected: selectedId, mode,
-        nodes: [...nodes.values()].filter((n) => !n.exiting).map((n) => ({ id: n.id, screen: toScreen(n.x, n.y), radius: n.r * cam.s })) }),
-      demo: () => { const s = [...events].reverse().find((e) => e.type === 'swap' && e.buy); const r = events.find((e) => e.type === 'rew' && e.tx === s?.tx); if (s) { corePulse(s.eth, true); inbound(s.eth); streamToNodes(r ? r.eth : s.eth * 0.025); } } };
-    setInterval(poll, POLL_MS);
-  } catch (e) { console.error(e); $('loadMsg').textContent = 'failed to load: ' + (e?.message || e); }
-}
-boot();
+  if (isHidden()) return;
+  const now = performance.now();
+  while (liveQueue.length && liveQueue[0].at <= now) applyEvent(liveQueue.shift().e);
+}, 50);
+document.addEventListener('visibilitychange', () => {
+  if (isHidden()) { clearTimeout(pollTimer); clearTimeout(imgTimer); imgTimer = 0; activeRequest?.abort(); }
+  else { schedulePoll(0); scheduleImages(); }
+});
+addEventListener('focus', () => { if (!isHidden()) { schedulePoll(0); scheduleImages(); } });
+// Read-only diagnostics, also used by development interaction checks.
+window.__swarm = {
+  get ready() { return firstLoaded; }, nodes: () => [...nodes.values()].filter((n) => !n.exiting).length, G: () => G, fps: () => fps,
+  view: () => ({ mobile, width: W, height: H, dpr: DPR, camera: { ...cam }, particles: parts.length, rings: rings.length, selected: selectedId, mode,
+    nodes: [...nodes.values()].filter((n) => !n.exiting).map((n) => ({ id: n.id, owner: n.owner, level: n.level, pending: n.pending, last: n.last, screen: toScreen(n.x, n.y), radius: n.r * cam.s })) }),
+};
+requestAnimationFrame(frame);
+poll();
 })();

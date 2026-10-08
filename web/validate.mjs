@@ -3,6 +3,8 @@ import { createServer } from 'node:http';
 import { readFile, writeFile, mkdir, access } from 'node:fs/promises';
 import { resolve, extname } from 'node:path';
 import { chromium } from 'playwright';
+import { fixture } from './rpc-fixture.mjs';
+import { validateRPC } from './validate-rpc.mjs';
 
 // All automation is development-only. Serve the committed export at a subpath.
 const root = resolve(import.meta.dirname, '..');
@@ -22,12 +24,14 @@ const server = createServer(async (req, res) => {
 await new Promise(r => server.listen(0, '127.0.0.1', r));
 const url = `http://127.0.0.1:${server.address().port}/preview/`;
 const executablePath = process.env.CHROMIUM_PATH || undefined;
-const report = { at: new Date().toISOString(), production: 'dist/ served under /preview/', checks: [], live: [], errors: [], networkFailures: [], desktop: [] };
+const report = { data:'Deterministic RPC fixtures; live reads are validated separately', at: new Date().toISOString(), production: 'dist/ served under /preview/', checks: [], live: [], errors: [], networkFailures: [], desktop: [] };
 let browser;
 const check = (name, detail = 'passed') => { report.checks.push({ name, detail }); console.log(`PASS ${name}: ${typeof detail === 'string' ? detail : JSON.stringify(detail)}`); };
 try {
   browser = await chromium.launch({ executablePath, headless: true });
   const context = await browser.newContext({ viewport: { width: 375, height: 812 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true });
+  const chain = fixture();
+  await context.route('https://**/*', chain.route);
   const page = await context.newPage();
   page.on('pageerror', e => report.errors.push(e.message));
   page.on('requestfailed', r => report.networkFailures.push({ url: r.url(), error: r.failure()?.errorText }));
@@ -133,15 +137,14 @@ try {
   check('touch cancellation releases gesture');
 
   await page.locator('#btnMenu').click();
-  await page.locator('#rpSpeed').selectOption('45');
-  assert.equal(await page.locator('#rpSpeed').inputValue(), '45');
+  assert.equal(await page.locator('#btnReplay, #rpSpeed, #rpBar, #rpLbl').count(), 0);
   await page.locator('#hlAddr').fill('invalid'); await page.locator('#hlAddr').press('Tab');
   assert.equal(await page.locator('#hlAddr').getAttribute('aria-invalid'), 'true');
   assert(await page.locator('#walletError').isVisible());
   await page.locator('#hlAddr').fill(''); await page.locator('#hlAddr').press('Tab');
   assert(!(await page.locator('#walletError').isVisible()));
   await page.keyboard.press('Escape'); assert.equal(await page.locator('#btnMenu').evaluate(e => e === document.activeElement), true);
-  check('menu speed, wallet validation/clear, Escape focus return');
+  check('no replay controls, wallet validation/clear, Escape focus return');
   await page.locator('#sheetToggle').click();
   await page.locator('#tabStats').focus(); await page.keyboard.press('ArrowRight');
   assert.equal(await page.locator('#tabHolders').getAttribute('aria-selected'), 'true');
@@ -155,20 +158,13 @@ try {
   assert(await page.locator('#tip').isVisible()); await page.keyboard.press('Escape');
   await page.keyboard.press('+'); assert((await view()).camera.user); await page.keyboard.press('Enter'); assert(!(await view()).camera.user);
   check('keyboard node details, zoom and Fit');
-  await page.locator('#btnReplay').click(); assert.equal((await view()).mode, 'replay');
-  await page.waitForTimeout(500); assert(await page.locator('#rpLbl').isVisible());
-  await page.locator('#btnReplay').click(); assert.equal((await view()).mode, 'live');
-  await page.waitForTimeout(1200); await contract('after replay stop');
-  check('Replay starts, progresses, stops and rebuilds live nodes');
-
   await page.emulateMedia({ reducedMotion:'reduce' });
-  await page.evaluate(() => window.__swarm.demo());
-  await page.waitForTimeout(200); assert.equal((await view()).particles, 0);
+  chain.burst(); await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await page.waitForFunction(() => document.querySelectorAll('.ev').length > 0);
+  await page.waitForTimeout(1200); assert.equal((await view()).particles, 0);
   assert.equal(await page.locator('.dot').evaluate(e => getComputedStyle(e).animationName), 'none');
   check('mobile reduced motion stops particles and status blink');
   await page.emulateMedia({ reducedMotion:'no-preference' });
-  await page.evaluate(() => { for (let i=0;i<12;i++) window.__swarm.demo(); });
-  assert((await view()).particles <= 120); check('burst rendering capped at 120 particles');
   const timing = await page.evaluate(() => new Promise(resolve => {
     const intervals=[]; let last=performance.now();
     function sample(now) { intervals.push(now-last); last=now; if(intervals.length < 180) requestAnimationFrame(sample); else { const sorted=intervals.slice(1).sort((a,b)=>a-b); resolve({ medianMs:sorted[Math.floor(sorted.length*.5)], p95Ms:sorted[Math.floor(sorted.length*.95)], frames:sorted.length, environment:'headless Chromium, desktop host; no phone performance claim' }); } }
@@ -200,17 +196,21 @@ try {
       const shots=[], measures=[];
       for(const route of ['baseline','preview']) {
         const p=await desktop.newPage(); await p.goto(url.replace('preview', route));
-        await p.addStyleTag({content:'#c, #loading { visibility:hidden !important; } .dot { animation:none !important; }'});
+        await p.addStyleTag({content:'#c, #loading, #rpcStatus { visibility:hidden !important; } .dot { animation:none !important; }'});
         await p.waitForTimeout(100);
-        measures.push(await p.evaluate(()=>Object.fromEntries(['top','stats','lb','tick','legend','btnReplay','rpSpeed','hlAddr','btnFit'].map(id=>[id,document.getElementById(id).getBoundingClientRect().toJSON()]))));
+        await p.locator('#tickList').evaluate(e=>{e.textContent='';});
+        measures.push(await p.evaluate(()=>Object.fromEntries(['top','stats','lb','tick','legend'].map(id=>[id,document.getElementById(id).getBoundingClientRect().toJSON()]))));
+        await p.locator('#tickList').evaluate(e=>{e.textContent='';});
+        await p.locator('#top').evaluate(e=>{e.style.visibility='hidden';});
         shots.push(await p.screenshot({scale:'css'})); await p.close();
       }
       assert.deepEqual(measures[0],measures[1],`desktop ${width} geometry changed`);
       assert(shots[0].equals(shots[1]),`desktop ${width} HUD pixels changed`);
-      report.desktop.push({width,height,geometry:'identical',staticHudPixels:'identical'});
+      report.desktop.push({width,height,geometry:'identical',staticHudPixels:'identical outside removed top controls; empty ticker normalized'});
       check(`desktop ${width} original geometry and HUD pixels identical`); await desktop.close();
     }
   }
+  await validateRPC(browser, url, check, out);
   assert.deepEqual(report.errors, [], 'uncaught application errors');
   assert(!report.networkFailures.some(r=>r.url.startsWith(url)), 'local export resource failures');
   check('no uncaught application errors or local asset failures');
