@@ -27,6 +27,7 @@ const iDist = new ethers.Interface([
   'event Exited(uint256 indexed tokenId, address indexed owner, uint256 ethPaid)',
   'event RewardsReceived(uint256 normal, uint256 surplus)',
 ]);
+const iAuction = new ethers.Interface(['event AuctionListed(uint256 indexed tokenId, uint256 startPrice, uint256 startedAt)']);
 const iPM = new ethers.Interface(['event Swap(bytes32 indexed id, address indexed sender, int128 amount0, int128 amount1, uint160 sqrtPriceX96, uint128 liquidity, int24 tick, uint24 fee)']);
 const iSpepe = new ethers.Interface(['function totalMinted() view returns (uint256)', 'function ownerOf(uint256) view returns (address)', 'function tokenURI(uint256) view returns (string)']);
 const iMC = new ethers.Interface([
@@ -36,6 +37,7 @@ const iMC = new ethers.Interface([
 const iSV = new ethers.Interface(['function getSlot0(bytes32) view returns (uint160 sqrtPriceX96,int24 tick,uint24 protocolFee,uint24 lpFee)']);
 const iCL = new ethers.Interface(['function latestRoundData() view returns (uint80,int256,uint256,uint256,uint80)']);
 const DIST_TOPICS = ['Activated', 'Upgraded', 'Exited', 'RewardsReceived'].map((n) => iDist.getEvent(n).topicHash);
+const AUCTION_TOPIC = iAuction.getEvent('AuctionListed').topicHash;
 const SWAP_TOPIC = iPM.getEvent('Swap').topicHash;
 
 // ---------- rpc ----------
@@ -44,13 +46,15 @@ let rpcIndex = 0, rpcId = 0, failures = 0, retryAt = 0, nextRequestAt = 0;
 let rpcTail = Promise.resolve(), activeRequest = null;
 const isHidden = () => document.visibilityState === 'hidden';
 const pauseError = () => new Error('RPC paused');
-const rpcNote = (message) => { $('rpcStatus').textContent = message; };
+const rpcNote = (message) => { $('rpcStatus').hidden = !message; $('rpcMessage').textContent = message; };
+function showRetry() {
+  if (retryAt > 0) rpcNote(`Can't reach Ethereum RPC, retrying in ${Math.max(0, Math.ceil((retryAt - Date.now()) / 1000))}s. ${firstLoaded ? 'Showing last available data.' : 'Waiting for data.'}`);
+}
 function deferRPC(error) {
-  const limited = /429|rate.?limit|too many|quota|compute units|request limit|limit exceeded|-32005/i.test(String(error?.message || error));
   failures++;
   retryAt = Date.now() + Math.min(60000, POLL_MS * 2 ** Math.min(failures - 1, 2));
   rpcIndex = (rpcIndex + 1) % RPCS.length;
-  rpcNote(limited ? 'RPC busy, retrying' : 'RPC unavailable, retrying');
+  showRetry();
 }
 async function requestRPC(method, args) {
   // Serialize and pace HTTP requests, including separate image batches.
@@ -126,6 +130,7 @@ const rings = [];          // expanding flash rings
 const floats = [];         // floating texts
 let G = {}, head = 0, scanned = 0, mode = 'loading', firstLoaded = false;
 let lastPriceAt = -Infinity, resnapshot = false;
+let extrasReady = false;
 let pendMax = 1e-9;
 const imgCache = new Map(); // id -> {img, sprite, url}
 const meta = new Map();     // id -> attributes
@@ -157,7 +162,8 @@ const toScreen = (x, y) => [W / 2 + (x - cam.x) * cam.s, H / 2 + (y - cam.y) * c
 const toWorld = (sx, sy) => [(sx - W / 2) / cam.s + cam.x, (sy - H / 2) / cam.s + cam.y];
 
 // One set of panels and controls: their data remains identical in both layouts.
-const panelIds = ['stats', 'lb', 'tick'], tabIds = ['tabStats', 'tabHolders', 'tabEvents'];
+const panelIds = ['stats', 'lb', 'tick', 'calculator', 'how', 'alerts', 'contracts'], tabIds = ['tabStats', 'tabHolders', 'tabEvents', 'tabCalculator', 'tabHow', 'tabAlerts', 'tabContracts'];
+let desktopPanel = '', panelTrigger = null;
 let sheetOpen = false, activeTab = 0, menuOpen = false;
 const legendHome = document.createComment('legend home');
 $('legend').before(legendHome);
@@ -180,15 +186,17 @@ function setSheet(open, focusTab = false) {
   sheetOpen = mobile && open;
   $('sheet').classList.toggle('expanded', sheetOpen);
   $('sheetToggle').setAttribute('aria-expanded', String(sheetOpen));
-  $('sheetToggle').setAttribute('aria-label', (sheetOpen ? 'Collapse' : 'Expand') + ' Stats, Holders and Events');
+  $('sheetToggle').setAttribute('aria-label', (sheetOpen ? 'Collapse' : 'Expand') + ' Swarm details');
   $('sheetChevron').textContent = sheetOpen ? '⌄' : '⌃';
   $('sheetBody').hidden = mobile && !sheetOpen;
   if (sheetOpen) { selectedId = null; setMenu(false); }
   panelIds.forEach((id, i) => {
-    $(id).hidden = mobile && i !== activeTab;
+    $(id).hidden = mobile ? i !== activeTab : i > 2 && id !== desktopPanel;
     if (mobile) { $(id).setAttribute('role', 'tabpanel'); $(id).setAttribute('aria-labelledby', tabIds[i]); $(id).tabIndex = 0; }
-    else { $(id).removeAttribute('role'); $(id).removeAttribute('aria-labelledby'); $(id).removeAttribute('tabindex'); }
+    else { $(id).removeAttribute('role'); if (i > 2) $(id).setAttribute('aria-labelledby', id + 'Title'); else $(id).removeAttribute('aria-labelledby'); $(id).removeAttribute('tabindex'); }
   });
+  document.querySelectorAll('[data-open]').forEach((b) => b.setAttribute('aria-expanded', String(mobile ? sheetOpen && panelIds[activeTab] === b.getAttribute('data-open') : desktopPanel === b.getAttribute('data-open'))));
+  if (extrasReady && calculatorVisible()) startFeeHistory();
   if (focusTab && sheetOpen) $(tabIds[activeTab]).focus();
   measureChrome();
 }
@@ -199,7 +207,7 @@ function selectTab(i) {
   setSheet(true);
 }
 function applyResponsiveLayout() {
-  mobile = mobileQuery.matches;
+  mobile = mobileQuery.matches; desktopPanel = '';
   if (mobile) $('stats').append($('legend')); else legendHome.after($('legend'));
   selectedId = null; $('tip').style.display = 'none';
   setMenu(false); setSheet(false); resize(); measureChrome(); renderHud();
@@ -209,12 +217,13 @@ $('sheetToggle').addEventListener('click', () => setSheet(!sheetOpen));
 tabIds.forEach((id, i) => {
   $(id).addEventListener('click', () => selectTab(i));
   $(id).addEventListener('keydown', (e) => {
-    const next = e.key === 'ArrowRight' ? (i + 1) % 3 : e.key === 'ArrowLeft' ? (i + 2) % 3 : e.key === 'Home' ? 0 : e.key === 'End' ? 2 : -1;
-    if (next < 0) return; e.preventDefault(); selectTab(next); $(tabIds[next]).focus();
+    const next = e.key === 'ArrowRight' ? (i + 1) % tabIds.length : e.key === 'ArrowLeft' ? (i + tabIds.length - 1) % tabIds.length : e.key === 'Home' ? 0 : e.key === 'End' ? tabIds.length - 1 : -1;
+    if (next < 0) return; e.preventDefault(); selectTab(next); $(tabIds[next]).focus(); $(tabIds[next]).scrollIntoView({ block:'nearest', inline:'nearest' });
   });
 });
 document.addEventListener('keydown', (e) => {
-  if (!mobile || e.key !== 'Escape') return;
+  if (e.key !== 'Escape') return;
+  if (!mobile) { if (desktopPanel) closePanel(); return; }
   if (menuOpen) setMenu(false, true);
   else if (selectedId !== null) { selectedId = null; cv.focus(); }
   else if (sheetOpen) { setSheet(false); $('sheetToggle').focus(); }
@@ -370,6 +379,10 @@ function decodeLog(l) {
       const ev = iPM.parseLog(l); const a0 = ev.args.amount0, a1 = ev.args.amount1;
       return { type: 'swap', buy: a0 < 0n, eth: nE(a0 < 0n ? -a0 : a0), og: nE(a1 < 0n ? -a1 : a1), sqrtP: ev.args.sqrtPriceX96, sender: ev.args.sender, block: l.blockNumber, idx: l.index, tx: l.transactionHash };
     }
+    if (l.address.toLowerCase() === A.AUCTION.toLowerCase()) {
+      const ev = iAuction.parseLog(l);
+      return { type:'auction', id:Number(ev.args.tokenId), price:nE(ev.args.startPrice), block:l.blockNumber, idx:l.index, tx:l.transactionHash, owner:'' };
+    }
     const ev = iDist.parseLog(l); if (!ev) return null;
     const base = { block: l.blockNumber, idx: l.index, tx: l.transactionHash };
     if (ev.name === 'Activated') return { ...base, type: 'act', id: Number(ev.args.tokenId), owner: ev.args.owner.toLowerCase(), level: Number(ev.args.level) };
@@ -381,9 +394,11 @@ function decodeLog(l) {
 }
 async function fetchEvents(from, to) {
   if (to < from) return [];
-  const d = await getLogsChunked({ address: A.DIST, topics: [DIST_TOPICS] }, from, to);
+  const d = await getLogsChunked({ address: [A.DIST, A.AUCTION], topics: [[...DIST_TOPICS, AUCTION_TOPIC]] }, from, to);
   const s = await getLogsChunked({ address: A.PM, topics: [SWAP_TOPIC, POOL_ID] }, from, to);
-  return [...d, ...s].map(decodeLog).filter(Boolean).sort((a, b) => a.block - b.block || a.idx - b.idx);
+  const events = [...d, ...s].map(decodeLog).filter(Boolean).sort((a, b) => a.block - b.block || a.idx - b.idx);
+  for (const e of events) if (e.type === 'auction') e.owner = events.find((x) => x.type === 'exit' && x.id === e.id && x.tx === e.tx)?.owner || '';
+  return events;
 }
 // Snapshot owns node data; queued effects must never overwrite current levels/owners.
 function applyEvent(e) {
@@ -406,6 +421,7 @@ function pushTicker(e) {
   else if (e.type === 'act') body = `<span class="tag act">ACTIVATE</span>${txLink(e.tx, `#${e.id} → L${e.level}`)} <span style="color:var(--mut)">${e.owner === HL ? '<b class="gold">you</b>' : short(e.owner)}</span>`;
   else if (e.type === 'up') body = `<span class="tag up">UPGRADE</span>${txLink(e.tx, `#${e.id} L${e.from}→L${e.level}`)} <span style="color:var(--mut)">${e.owner === HL ? '<b class="gold">you</b>' : short(e.owner)}</span>`;
   else if (e.type === 'exit') body = `<span class="tag exit">EXIT</span>${txLink(e.tx, `#${e.id} paid ${e.eth.toFixed(5)} ETH`)} <span style="color:var(--mut)">→ auction</span>`;
+  else if (e.type === 'auction') body = `<span class="tag exit">AUCTION</span>${txLink(e.tx, `#${e.id} listed · ${fmtOG(e.price)} OG` )}`;
   el.innerHTML = t + body;
   const list = $('tickList'); $('eventEmpty')?.remove(); list.prepend(el); tickRows.unshift({ tx: e.tx, el });
   while (list.children.length > 14) list.lastChild.remove();
@@ -522,6 +538,7 @@ async function pumpImages() {
 
 // ---------- HUD ----------
 function renderHud() {
+  if (extrasReady) { renderCalculator(); renderLookup(); renderAlertWallet(); }
   if (G.tw == null) return;
   const tw = Number(G.tw), active = G.apl.reduce((a, b) => a + b, 0);
   const nodeCount = [...nodes.values()].filter((n) => !n.exiting).length;
@@ -536,7 +553,9 @@ function renderHud() {
   $('hEpw').innerHTML = `${epw.toFixed(5)} <small>ETH${G.usd ? ' · ' + fmtUsd(epw * G.usd) : ''}</small>`;
   $('hBack').innerHTML = `${fE(back, 4)} <small>ETH = ${fE(G.sumPend, 3)} + ${fE(G.backlog, 3)}${G.usd ? '<br>≈ ' + fmtUsd(nE(back) * G.usd) : ''}</small>`;
   if (G.ogPerEth) $('hPrice').innerHTML = `${Math.round(G.ogPerEth).toLocaleString('en-US')} <small>OG / ETH${G.usd ? '<br>1M OG ≈ ' + fmtUsd(1e6 / G.ogPerEth * G.usd) : ''}</small>`;
+  else $('hPrice').textContent = 'Price unavailable; retrying with new blocks.';
   if (G.usd) $('hUsd').textContent = fmtUsd(G.usd);
+  else $('hUsd').textContent = 'Feed unavailable; retrying within 5 minutes.';
   // highlighted wallet
   const mine = HL ? [...nodes.values()].filter((n) => !n.exiting && n.owner === HL) : [];
   const mw = mine.reduce((s, n) => s + WEIGHT[n.level], 0), mp = mine.reduce((s, n) => s + n.pending, 0);
@@ -553,6 +572,7 @@ function renderHud() {
 $('lbList').addEventListener('click', (e) => { const r = e.target instanceof Element ? e.target.closest('.lbr') : null; if (r instanceof HTMLElement) { HL = r.dataset.addr; lsSet('swarmHL', HL); $('hlAddr').value = HL; $('walletError').hidden = true; $('hlAddr').setAttribute('aria-invalid', 'false'); renderHud(); } });
 $('lbList').addEventListener('keydown', (e) => { const r = e.target instanceof Element ? e.target.closest('.lbr') : null; if ((e.key === 'Enter' || e.key === ' ') && r instanceof HTMLElement) { e.preventDefault(); r.click(); } });
 setInterval(() => { // countdown
+  if (G.tw == null) return;
   if (!G.streamEnd) { $('hCount').innerHTML = '<small>no stream running</small>'; return; }
   const now = G.ts + (Date.now() - G.tsAt) / 1000; let s = Math.max(0, Math.floor(G.streamEnd - now));
   const d = Math.floor(s / 86400); s %= 86400; const h = Math.floor(s / 3600); s %= 3600; const m = Math.floor(s / 60); s %= 60;
@@ -787,6 +807,264 @@ cv.addEventListener('keydown', (e) => {
 if (HL) $('hlAddr').value = HL;
 $('hlAddr').addEventListener('change', () => { const v = $('hlAddr').value.trim(); const invalid = !!v && !ethers.isAddress(v); $('hlAddr').setAttribute('aria-invalid', String(invalid)); $('walletError').hidden = !invalid; $('walletError').textContent = invalid ? 'Enter a valid Ethereum wallet address, or clear the field.' : ''; if (!v) { HL = ''; lsSet('swarmHL', ''); renderHud(); } else if (!invalid) { HL = v.toLowerCase(); lsSet('swarmHL', HL); renderHud(); } });
 
+// ---------- read-only tools ----------
+const BURN = [0, 50000, 150000, 400000];
+const FEE_KEY = `swarm:1:${A.DIST.toLowerCase()}:fees24:v1`;
+let feeCache = { from:0, through:0, records:[] }, feeResult = null;
+let feeBusy = false, feeTimer = 0, feeProgress = '', feeError = false;
+let lookup = '', lookupExtra = null, lookupVersion = 0;
+const ALERT_KEY = 'swarm:alerts:v1';
+let alertPrefs = { enabled:false, scope:'all', ids:[], auction:true, activation:true, exit:true, swap:false, threshold:1, sound:false, notifications:false };
+const alertSeen = new Set();
+let audioContext = null;
+function calculatorVisible() { return extrasReady && (mobile ? sheetOpen && activeTab === 3 : desktopPanel === 'calculator'); }
+function openPanel(id, trigger) {
+  panelTrigger = trigger;
+  if (mobile) { selectTab(panelIds.indexOf(id)); $(tabIds[activeTab]).focus(); $(tabIds[activeTab]).scrollIntoView({block:'nearest',inline:'nearest'}); }
+  else {
+    desktopPanel = desktopPanel === id ? '' : id; setSheet(false);
+    if (desktopPanel) { $(id).tabIndex = -1; $(id).focus(); }
+  }
+}
+function closePanel() { desktopPanel = ''; setSheet(false); panelTrigger?.focus(); }
+const est = (n) => !Number.isFinite(n) ? 'Unavailable' : n !== 0 && Math.abs(n) < 0.000001 ? n.toExponential(2) : n.toLocaleString('en-US', {maximumFractionDigits:6});
+function priced(og) {
+  if (!og) return '0 ETH · $0';
+  if (!G.ogPerEth) return G.tw == null ? 'Loading...' : 'Spot price unavailable';
+  const eth = og / G.ogPerEth;
+  return `${est(eth)} ETH · ${G.usd ? fmtUsd(eth * G.usd) : 'USD feed unavailable'}`;
+}
+function renderCalculator() {
+  const level = Number($('calcLevel').value), from = Number($('calcFrom').value), weight = WEIGHT[level], burn = BURN[level];
+  $('calcWeight').textContent = String(weight);
+  $('calcBurn').textContent = `${burn.toLocaleString('en-US')} OG`;
+  $('calcCost').textContent = priced(burn);
+  $('calcUpgrade').textContent = from > level ? 'Choose an equal or higher target level.' : `${(burn - BURN[from]).toLocaleString('en-US')} OG · ${priced(burn - BURN[from])}`;
+  $('calcCaption').textContent = `Estimated ETH for L${level} · weight ${weight}`;
+  if (G.tw == null) return;
+  const tw = Number(G.tw), now = G.ts + (Date.now() - G.tsAt) / 1000;
+  // Advance the known linear stream locally between the existing snapshots.
+  const durationAtRead = Math.max(0, G.streamEnd - G.ts), secondsLeft = Math.max(0, G.streamEnd - now);
+  const backlogLeft = durationAtRead ? nE(G.backlog) * Math.min(1, secondsLeft / durationAtRead) : 0;
+  const streamHour = tw && secondsLeft ? backlogLeft / secondsLeft / tw * 3600 : 0;
+  const feeHour = feeResult ? (tw ? feeResult.eth / tw / 24 : 0) : null;
+  const periods = [1, 24, 720];
+  const streams = periods.map(h => streamHour * weight * Math.min(h, secondsLeft / 3600));
+  const fees = periods.map(h => feeHour == null ? null : feeHour * weight * h);
+  const row = (id, label, values) => { $(id).innerHTML = `<th scope="row">${label}</th>` + values.map(v => `<td>${v == null ? (feeError ? 'Retrying...' : 'Loading...') : est(v)}</td>`).join(''); };
+  row('calcStream','Backlog',streams); row('calcFees','Fees · 24h',fees);
+  row('calcTotal','Total',streams.map((v,i) => fees[i] == null ? null : v + fees[i]));
+  $('calcPerWeight').textContent = `ETH/hour per weight: backlog ${est(streamHour)} + ordinary fees ${feeHour == null ? 'still loading' : est(feeHour)}${feeHour == null ? '' : ` = ${est(streamHour + feeHour)}`}.${tw ? '' : ' No active weight; no rewards are allocated.'}`;
+  const daily = feeHour == null ? null : streams[1] + fees[1];
+  $('calcPayback').textContent = !G.ogPerEth ? 'Spot price unavailable.' : daily == null ? 'Loading the complete 24h fee window...' : daily > 0 ? `${est(burn / G.ogPerEth / daily)} days at the current daily rate. The backlog stream ends, so this rate may not last until payback.` : 'No finite payback at the current zero reward rate.';
+  const result = feeResult ? `24h ordinary fees: ${est(feeResult.eth)} ETH. Window ending ${tsLocal(feeResult.asOf)} (UTC offset follows your browser). ` : '';
+  $('feeStatus').textContent = result + (feeError ? "Can't load the complete fee window. Retrying through the shared RPC queue; use Retry above." : feeProgress || (feeResult ? 'Cached; refreshed every 5 minutes while Calculator is open.' : 'Loading... fee history is read in batches of at most 50 blocks.'));
+}
+async function blockTime(block) {
+  const value = await requestRPC('eth_getBlockByNumber', [ethers.toQuantity(block), false]);
+  const ts = Number(value?.timestamp);
+  if (!Number.isSafeInteger(ts) || ts <= 0) throw new Error('Block timestamp unavailable');
+  return ts;
+}
+function historyGuard() { if (!calculatorVisible() || isHidden() || Date.now() < retryAt) throw pauseError(); }
+async function startFeeHistory() {
+  if (!calculatorVisible() || isHidden() || !firstLoaded || feeBusy) return;
+  clearTimeout(feeTimer);
+  const wait = Math.max(retryAt - Date.now(), feeResult ? PRICE_MS - (Date.now() - feeResult.loadedAt) : 0);
+  if (wait > 0) { feeTimer = window.setTimeout(startFeeHistory, wait); return; }
+  feeBusy = true; feeError = false;
+  try {
+    const target = scanned, asOf = G.ts, cutoff = asOf - 86400;
+    feeProgress = 'Loading... locating the start of the last 24 hours.'; renderCalculator();
+    // Find the exact timestamp boundary. The estimate only brackets a search;
+    // all boundaries are confirmed against block headers, never block-time guesses.
+    let hi = target, span = 8000, lo = Math.max(0, hi - span);
+    historyGuard();
+    while (lo > 0 && await blockTime(lo) >= cutoff) { historyGuard(); span *= 2; lo = Math.max(0, target - span); }
+    while (lo < hi) {
+      historyGuard(); const mid = Math.floor((lo + hi) / 2);
+      if (await blockTime(mid) < cutoff) lo = mid + 1; else hi = mid;
+    }
+    const start = lo;
+    if (!feeCache.from || feeCache.from > start || feeCache.through < start - 1 || feeCache.through > target) feeCache = { from:start, through:start - 1, records:[] };
+    feeCache.records = feeCache.records.filter(r => r.block >= start);
+    feeCache.from = start;
+    while (feeCache.through < target) {
+      historyGuard();
+      const from = feeCache.through + 1, to = Math.min(target, from + LOG_CHUNK - 1);
+      const logs = await getLogsChunked({address:A.DIST,topics:[iDist.getEvent('RewardsReceived').topicHash]},from,to);
+      const records = logs.map(l => ({block:l.blockNumber,idx:l.index,normal:iDist.parseLog(l).args.normal.toString()}));
+      // Commit each successful chunk atomically so interruption can resume.
+      feeCache.records.push(...records); feeCache.through = to;
+      lsSet(FEE_KEY, JSON.stringify(feeCache));
+      feeProgress = `Loading... ${Math.round((to - start + 1) / Math.max(1,target - start + 1) * 100)}% of the 24h fee window. You can keep using the map.`;
+      renderCalculator();
+    }
+    const total = feeCache.records.reduce((sum,r) => sum + BigInt(r.normal),0n);
+    feeResult = {eth:nE(total),asOf,loadedAt:Date.now()}; feeProgress = '';
+  } catch (error) {
+    if (String(error.message) !== 'RPC paused') { feeError = true; if (Date.now() >= retryAt) deferRPC(error); }
+  } finally {
+    feeBusy = false; renderCalculator();
+    if (calculatorVisible() && !isHidden()) feeTimer = window.setTimeout(startFeeHistory, Math.max(1000,retryAt - Date.now(),feeResult ? PRICE_MS - (Date.now() - feeResult.loadedAt) : 0));
+  }
+}
+function renderLookup() {
+  if (!lookup) return;
+  if (G.tw == null) { $('calcLookupResult').textContent = 'Loading... waiting for the current snapshot.'; return; }
+  const wallet = ethers.isAddress(lookup), tw = Number(G.tw);
+  const items = [...nodes.values()].filter(n => !n.exiting && (wallet ? n.owner === lookup.toLowerCase() : n.id === Number(lookup)));
+  if (!wallet && !items.length && lookupExtra?.id === Number(lookup)) items.push(lookupExtra);
+  if (!items.length) { $('calcLookupResult').textContent = wallet ? 'No active Pepes in this wallet. Inactive NFTs carry no active weight.' : 'No active Pepe with this ID in the current snapshot. Look up the ID to check inactive ownership.'; return; }
+  const w = items.reduce((s,n) => s + WEIGHT[n.level],0), pending = items.reduce((s,n) => s + n.pending,0);
+  const levels = [1,2,3].map(l => `L${l}: ${items.filter(n => n.level === l).length}`).join(' · ');
+  $('calcLookupResult').textContent = `${wallet ? `${items.length} active Pepes · ${levels}` : `Pepe #${items[0].id} · ${items[0].level ? `L${items[0].level}` : 'Inactive (level 0)'} · owner ${items[0].owner}`} · Pending ${est(pending)} ETH · Weight ${w} / ${tw} (${tw ? est(w / tw * 100) : '0'}%).`;
+}
+async function lookupAccount(event) {
+  event.preventDefault(); const v = $('calcAccount').value.trim().replace(/^#/,''), version = ++lookupVersion;
+  $('calcAccount').setAttribute('aria-invalid','false'); lookupExtra = null;
+  if (!v) { lookup = ''; $('calcLookupResult').textContent = 'Enter a Pepe ID or wallet to see its level, pending ETH and weight share.'; return; }
+  if (!ethers.isAddress(v) && !(/^[1-9]\d*$/.test(v) && Number.isSafeInteger(Number(v)))) {
+    lookup = ''; $('calcAccount').setAttribute('aria-invalid','true'); $('calcLookupResult').textContent = 'Enter a positive Pepe ID or a complete Ethereum address.'; $('calcAccount').focus(); return;
+  }
+  lookup = v; renderLookup();
+  if (ethers.isAddress(v) || !firstLoaded) return;
+  const id = Number(v), active = nodes.get(id);
+  let found = active && !active.exiting ? active : null;
+  if (!found) {
+    $('calcLookupResult').textContent = 'Loading... checking this Pepe on Ethereum.';
+    try {
+      const r = await multicall([[A.SPEPE,iSpepe,'ownerOf',[id]],[A.DIST,iDist,'level',[id]],[A.DIST,iDist,'pending',[id]]],ethers.toQuantity(scanned));
+      if (version !== lookupVersion) return;
+      if (!r[0]) { lookup = ''; $('calcLookupResult').textContent = 'No minted Pepe found for this ID. Check the ID and try again.'; return; }
+      if (r[1] == null || r[2] == null || Number(r[1]) > 3) throw new Error('Incomplete Pepe read');
+      found = lookupExtra = {id,owner:r[0],level:Number(r[1]),pending:nE(r[2])};
+    } catch {
+      if (version === lookupVersion) { lookup = ''; $('calcLookupResult').textContent = "Can't read this Pepe. Wait for RPC recovery, then choose Look up again."; }
+      return;
+    }
+  }
+  $('calcFrom').value = String(found.level);
+  if (Number($('calcLevel').value) < found.level) $('calcLevel').value = String(found.level);
+  renderLookup(); renderCalculator();
+}
+function renderAlertWallet() {
+  $('alertWallet').textContent = HL ? `Highlighted wallet: ${HL}` : 'No wallet highlighted. Use the wallet field or choose a holder.';
+  $('alertIdsField').hidden = $('alertScope').value !== 'ids';
+}
+function notificationStatus() {
+  const available = 'Notification' in window && window.isSecureContext;
+  $('enableNotifications').disabled = !available;
+  $('enableNotifications').textContent = alertPrefs.notifications ? 'Disable browser notifications' : 'Enable browser notifications';
+  $('notificationStatus').textContent = !available ? 'Browser notifications are unavailable here. In-page alerts still work.' : Notification.permission === 'denied' ? 'Permission is blocked. Change it in browser settings; in-page alerts still work.' : alertPrefs.notifications && Notification.permission === 'granted' ? 'Browser notifications enabled for this open page.' : 'Optional. Permission is requested only when you click.';
+}
+function saveAlertPrefs() {
+  try { localStorage.setItem(ALERT_KEY, JSON.stringify(alertPrefs)); return true; } catch { return false; }
+}
+function prepareSound() {
+  try { audioContext ||= new AudioContext(); audioContext.resume().catch(() => {}); } catch {}
+}
+function playSound() {
+  if (!audioContext || audioContext.state !== 'running') return;
+  const oscillator = audioContext.createOscillator(), gain = audioContext.createGain(), now = audioContext.currentTime;
+  oscillator.frequency.value = 660; gain.gain.setValueAtTime(0.05,now); gain.gain.exponentialRampToValueAtTime(0.001,now + .16);
+  oscillator.connect(gain); gain.connect(audioContext.destination); oscillator.start(now); oscillator.stop(now + .18);
+  oscillator.onended = () => { oscillator.disconnect(); gain.disconnect(); };
+}
+function saveAlerts(event) {
+  event.preventDefault();
+  const scope = $('alertScope').value, raw = $('alertIds').value.trim(), threshold = Number($('alertThreshold').value);
+  $('alertIds').setAttribute('aria-invalid','false'); $('alertThreshold').setAttribute('aria-invalid','false');
+  const ids = raw ? raw.split(',').map(x => Number(x.trim())) : [];
+  if (scope === 'ids' && (!raw || ids.length > 100 || ids.some(x => !Number.isSafeInteger(x) || x <= 0))) {
+    $('alertIds').setAttribute('aria-invalid','true'); $('alertStatus').textContent = 'Enter up to 100 positive Pepe IDs, separated by commas.'; $('alertIds').focus(); return;
+  }
+  if (!Number.isFinite(threshold) || threshold < 0 || !$('alertThreshold').value) {
+    $('alertThreshold').setAttribute('aria-invalid','true'); $('alertStatus').textContent = 'Enter a swap threshold of zero or more ETH.'; $('alertThreshold').focus(); return;
+  }
+  alertPrefs = {...alertPrefs,enabled:$('alertEnabled').checked,scope,ids:[...new Set(ids)],threshold,sound:$('alertSound').checked,auction:$('alertAuction').checked,activation:$('alertActivation').checked,exit:$('alertExit').checked,swap:$('alertSwap').checked};
+  if (alertPrefs.sound) prepareSound();
+  const saved = saveAlertPrefs();
+  $('alertStatus').textContent = `${saved ? 'Saved.' : 'Browser storage is unavailable; choices last for this visit.'} ${alertPrefs.enabled ? 'Alerts are on while this page is open.' : 'Alerts are off.'}${alertPrefs.enabled && scope === 'wallet' && !HL ? ' Highlight a wallet to receive matching alerts.' : ''}${alertPrefs.sound ? ' Sound is ready for this visit; after a reload, click Save alerts to enable audio again.' : ''}`;
+}
+function toast(message, tx = '') {
+  const card = document.createElement('div'); card.className = 'toast';
+  const text = document.createElement('p'); text.textContent = message; card.append(text);
+  if (/^0x[0-9a-f]{64}$/i.test(tx)) { const a = document.createElement('a'); a.href = `https://etherscan.io/tx/${tx}`; a.textContent = 'View transaction ↗'; a.target = '_blank'; a.rel = 'noopener noreferrer'; card.append(a); }
+  const dismiss = document.createElement('button'); dismiss.textContent = 'Dismiss'; dismiss.setAttribute('aria-label',`Dismiss alert: ${message}`); dismiss.onclick = () => { card.remove(); if (mobile) $('btnMenu').focus(); else /** @type {HTMLButtonElement} */ ($('toolNav').querySelector('button[data-open="alerts"]')).focus(); }; card.append(dismiss);
+  $('toastStack').prepend(card); while ($('toastStack').children.length > 3) $('toastStack').lastElementChild.remove();
+  $('toastAnnounce').textContent = message;
+  if (alertPrefs.sound) playSound();
+  if (alertPrefs.notifications && 'Notification' in window && Notification.permission === 'granted') {
+    try { const n = new Notification('OG Swarm map', {body:message,tag:tx || message}); setTimeout(() => n.close(),15000); } catch { $('notificationStatus').textContent = 'This browser could not show a notification. In-page alerts are still on.'; }
+  }
+}
+async function deliverAlerts(events) {
+  if (!alertPrefs.enabled) return;
+  for (const e of events) {
+    if (!alertPrefs.enabled) break;
+    const key = `${e.tx}:${e.idx}`;
+    if (alertSeen.has(key)) continue;
+    alertSeen.add(key); if (alertSeen.size > 2000) alertSeen.delete(alertSeen.values().next().value);
+    const eligible = e.type === 'auction' ? alertPrefs.auction : e.type === 'act' || e.type === 'up' ? alertPrefs.activation : e.type === 'exit' ? alertPrefs.exit : e.type === 'swap' && alertPrefs.swap && e.eth > alertPrefs.threshold;
+    if (!eligible) continue;
+    if (alertPrefs.scope === 'ids' && (!('id' in e) || !alertPrefs.ids.includes(e.id))) continue;
+    if (alertPrefs.scope === 'wallet') {
+      if (!HL) continue;
+      let owner = e.owner;
+      if (e.type === 'swap') {
+        try { const tx = await requestRPC('eth_getTransactionByHash',[e.tx]); owner = tx?.from?.toLowerCase(); }
+        catch { $('alertStatus').textContent = 'Could not identify a swap sender. That wallet alert was skipped; live reads will retry.'; continue; }
+      }
+      if (owner !== HL) continue;
+    }
+    const message = e.type === 'auction' ? `New auction: Pepe #${e.id}, starting at ${fmtOG(e.price)} OG.` : e.type === 'act' ? `Pepe #${e.id} activated at L${e.level}.` : e.type === 'up' ? `Pepe #${e.id} upgraded from L${e.from} to L${e.level}.` : e.type === 'exit' ? `Pepe #${e.id} exited with ${est(e.eth)} ETH.` : `Big ${e.buy ? 'buy' : 'sell'}: ${est(e.eth)} ETH.`;
+    toast(message,e.tx);
+  }
+}
+function initTools() {
+  try {
+    const c = JSON.parse(lsGet(FEE_KEY));
+    if (c && Number.isSafeInteger(c.from) && c.from > 0 && Number.isSafeInteger(c.through) && c.through >= c.from - 1 && Array.isArray(c.records) && c.records.length <= 50000 && c.records.every(r => Number.isSafeInteger(r.block) && r.block >= c.from && r.block <= c.through && Number.isSafeInteger(r.idx) && /^\d+$/.test(r.normal))) feeCache = c;
+  } catch {}
+  try {
+    const p = JSON.parse(lsGet(ALERT_KEY));
+    if (p && ['all','wallet','ids'].includes(p.scope) && Array.isArray(p.ids) && p.ids.length <= 100 && p.ids.every(id => Number.isSafeInteger(id) && id > 0) && Number.isFinite(p.threshold) && p.threshold >= 0) {
+      for (const k of ['enabled','auction','activation','exit','swap','sound','notifications']) if (typeof p[k] === 'boolean') alertPrefs[k] = p[k];
+      alertPrefs.scope = p.scope; alertPrefs.ids = p.ids; alertPrefs.threshold = p.threshold;
+    }
+  } catch {}
+  document.querySelectorAll('[data-open]').forEach(b => b.addEventListener('click',() => openPanel(b.getAttribute('data-open'),b)));
+  document.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click',closePanel));
+  $('calcLevel').addEventListener('change',renderCalculator); $('calcFrom').addEventListener('change',renderCalculator);
+  $('calcLookup').addEventListener('submit',lookupAccount);
+  $('alertScope').value = alertPrefs.scope; $('alertIds').value = alertPrefs.ids.join(', '); $('alertThreshold').value = String(alertPrefs.threshold);
+  for (const [id,key] of [['alertEnabled','enabled'],['alertAuction','auction'],['alertActivation','activation'],['alertExit','exit'],['alertSwap','swap'],['alertSound','sound']]) /** @type {HTMLInputElement} */ ($(id)).checked = alertPrefs[key];
+  $('alertStatus').textContent = alertPrefs.enabled ? 'Saved alerts are on while this page is open.' : 'Alerts are off. Choose what to watch, then save.';
+  $('alertForm').addEventListener('submit',saveAlerts); $('alertScope').addEventListener('change',renderAlertWallet);
+  $('enableNotifications').addEventListener('click',async () => {
+    if (alertPrefs.notifications) alertPrefs.notifications = false;
+    else { try { alertPrefs.notifications = (Notification.permission === 'granted' || await Notification.requestPermission() === 'granted'); } catch {} }
+    saveAlertPrefs(); notificationStatus();
+  });
+  const contracts = [['OG token',A.OG],['Hook',A.HOOK],['Distributor',A.DIST],['Auction',A.AUCTION],['Swarm Pepe collection',A.SPEPE],['Pool ID',POOL_ID]];
+  for (const [name,value] of contracts) {
+    const row = document.createElement('div'); row.className = 'contract-row';
+    row.innerHTML = `<strong>${name}</strong><code>${value}</code><button type="button" aria-label="Copy ${name}">Copy</button><a href="https://etherscan.io/address/${name === 'Pool ID' ? A.PM + '#readContract' : value}" target="_blank" rel="noopener noreferrer">${name === 'Pool ID' ? 'PoolManager on Etherscan' : name + ' on Etherscan'} ↗</a>`;
+    row.querySelector('button').addEventListener('click',async () => {
+      let copyTimeout; $('copyStatus').textContent = `Copying ${name}...`;
+      try { await Promise.race([navigator.clipboard.writeText(value), new Promise((_, reject) => { copyTimeout = window.setTimeout(() => reject(new Error('Clipboard unavailable')), 3000); })]); $('copyStatus').textContent = `${name} copied.`; }
+      catch { const selection = window.getSelection(), range = document.createRange(); range.selectNodeContents(row.querySelector('code')); selection.removeAllRanges(); selection.addRange(range); $('copyStatus').textContent = `Copy unavailable. ${name} is selected; use your browser’s Copy command.`; }
+      finally { clearTimeout(copyTimeout); }
+    }); $('contractList').append(row);
+  }
+  $('rpcRetry').addEventListener('click',() => { schedulePoll(0); if (calculatorVisible()) { if (feeResult) feeResult.loadedAt = 0; startFeeHistory(); } showRetry(); });
+  setInterval(() => { if (!isHidden()) { showRetry(); if (calculatorVisible()) renderCalculator(); } },1000);
+  document.addEventListener('visibilitychange',() => { if (isHidden()) clearTimeout(feeTimer); else if (calculatorVisible()) startFeeHistory(); });
+  new ResizeObserver(() => { if (!mobile) document.documentElement.style.setProperty('--tools-bottom', ($('toolNav').getBoundingClientRect().bottom + 8) + 'px'); }).observe($('toolNav'));
+  extrasReady = true; renderCalculator(); renderAlertWallet(); notificationStatus();
+}
+
 // ---------- live loop ----------
 let liveQueue = [], pollTimer = 0, polling = false;
 function schedulePoll(delay = POLL_MS) {
@@ -818,6 +1096,7 @@ async function poll() {
       const state = await readState([...ids], ethers.toQuantity(to));
       // Cursor and rendered state commit together only after ALL reads succeed.
       head = scanned = to; commitState(state);
+      deliverAlerts(evs);
       const spread = Math.min(POLL_MS * 0.8, Math.max(400, evs.length * 350));
       evs.forEach((e, i) => liveQueue.push({ e, at: performance.now() + (evs.length > 1 ? (i / (evs.length - 1)) * spread : 0) }));
     }
@@ -827,7 +1106,7 @@ async function poll() {
       if (Date.now() >= retryAt) deferRPC(error);
       if (!firstLoaded) $('loadMsg').textContent = 'Waiting for chain data. Retrying automatically…';
     }
-  } finally { polling = false; schedulePoll(); scheduleImages(); }
+  } finally { polling = false; schedulePoll(); scheduleImages(); if (calculatorVisible()) startFeeHistory(); }
 }
 setInterval(() => {
   if (isHidden()) return;
@@ -845,6 +1124,7 @@ window.__swarm = {
   view: () => ({ mobile, width: W, height: H, dpr: DPR, camera: { ...cam }, particles: parts.length, rings: rings.length, selected: selectedId, mode,
     nodes: [...nodes.values()].filter((n) => !n.exiting).map((n) => ({ id: n.id, owner: n.owner, level: n.level, pending: n.pending, last: n.last, screen: toScreen(n.x, n.y), radius: n.r * cam.s })) }),
 };
+initTools();
 requestAnimationFrame(frame);
 poll();
 })();

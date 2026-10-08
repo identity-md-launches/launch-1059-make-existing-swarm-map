@@ -20,13 +20,13 @@ export async function validateRPC(browser, url, check, out) {
   const ready=async()=>page.evaluate(()=>window.__swarm?.ready);
   const snapshotCalls=()=>chain.calls.filter(c=>c.names.includes('pending'));
   const images=()=>chain.calls.filter(c=>c.names.includes('tokenURI'));
-  const status=()=>page.locator('#rpcStatus').textContent();
+  const status=()=>page.locator('#rpcMessage').textContent();
   try {
     // Startup 429s: 15s, 30s, 60s, 60s, rotating the entire existing list.
     let remaining=4;
     chain.fail=()=>remaining-->0?{status:429}:null;
     await page.goto(url);
-    await settle(async()=>await status()==='RPC busy, retrying','busy note');
+    await settle(async()=>(await status()).includes("Can't reach Ethereum RPC"),'busy note');
     const gaps=[15000,30000,60000,60000];
     for(let i=0;i<4;i++) {
       const count=chain.calls.length;
@@ -87,8 +87,8 @@ export async function validateRPC(browser, url, check, out) {
     // JSON RPC rate-limit on the second filter must not advance the cursor.
     chain.head++;start=chain.calls.length;
     let failed=false;
-    chain.fail=e=>!failed && e.method==='eth_getLogs' && e.params[0].address!==DIST ? (failed=true,{error:{code:-32005,message:'rate limit exceeded'}}):null;
-    await focus();await settle(async()=>await status()==='RPC busy, retrying','JSON rate limit');
+    chain.fail=e=>!failed && e.method==='eth_getLogs' && !Array.isArray(e.params[0].address) ? (failed=true,{error:{code:-32005,message:'rate limit exceeded'}}):null;
+    await focus();await settle(async()=>(await status()).includes("Can't reach Ethereum RPC"),'JSON rate limit');
     assert((await page.locator('#blk').textContent()).includes((BASE+121).toLocaleString('en-US')));
     await page.screenshot({path:resolve(out,'rpc-busy-mobile.png'),scale:'css'});
     const contrast=await page.locator('#rpcStatus').evaluate(el=>{
@@ -113,13 +113,13 @@ export async function validateRPC(browser, url, check, out) {
     assert.equal(chain.calls.length,requestsAtFailure);
     await page.clock.fastForward(15000);
     await settle(async()=> (await page.locator('#blk').textContent()).includes((BASE+122).toLocaleString('en-US')),'retried cursor');
-    const retries=chain.calls.slice(start).filter(c=>c.method==='eth_getLogs' && c.params[0].address===DIST);
+    const retries=chain.calls.slice(start).filter(c=>c.method==='eth_getLogs' && Array.isArray(c.params[0].address));
     assert.equal(retries.length,2);assert.deepEqual(retries[0].params,retries[1].params);assert.notEqual(retries[0].url,retries[1].url);
     check('JSON rate-limit cooldown covers all work; second-filter failure retries range without losing cursor');
 
     // Failed required subcall retains state and cursor until an intact snapshot.
     chain.head++;chain.partial=true;await focus();
-    await settle(async()=>await status()==='RPC unavailable, retrying','partial multicall');
+    await settle(async()=>(await status()).includes("Can't reach Ethereum RPC"),'partial multicall');
     assert((await page.locator('#blk').textContent()).includes((BASE+122).toLocaleString('en-US')));
     chain.partial=false;await page.clock.fastForward(15000);
     await settle(async()=> (await page.locator('#blk').textContent()).includes((BASE+123).toLocaleString('en-US')),'partial recovery');
@@ -171,7 +171,7 @@ export async function validateRPC(browser, url, check, out) {
     let imageFailed=false;
     chain.fail=e=>!imageFailed && e.ids.length ? (imageFailed=true,{status:429}):null;
     await page.locator('#c').focus();await page.keyboard.press('n');
-    await settle(async()=>await status()==='RPC busy, retrying','image rate limit');
+    await settle(async()=>(await status()).includes("Can't reach Ethereum RPC"),'image rate limit');
     start=chain.calls.length;await page.clock.runFor(5000);assert.equal(chain.calls.length,start);
     await page.clock.fastForward(15000);
     await settle(async()=>await page.locator('#tip img').count()>0,'image retry');

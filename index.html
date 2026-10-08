@@ -113,11 +113,82 @@
     #tipClose { position:absolute; top:4px; right:4px; border:0; background:transparent; font-size:20px; }
     #tip .traits { font-size:12px !important; }
     #rpcStatus { top:calc(var(--view-top) + var(--top-edge) + 56px); max-width:calc(var(--view-width) - 16px); width:max-content; }
-    body:has(#rpcStatus:not(:empty)) #controls { top:calc(var(--view-top) + var(--top-edge) + 88px); max-height:calc(var(--view-height) - var(--top-edge) - var(--bottom-edge) - var(--sheet-height) - 96px); }
-    body:has(#rpcStatus:not(:empty)) #tip { max-height:calc(var(--view-height) - var(--top-edge) - var(--bottom-edge) - var(--sheet-height) - 104px); }
+    body:has(#rpcStatus:not([hidden])) #controls { top:calc(var(--view-top) + var(--top-edge) + 88px); max-height:calc(var(--view-height) - var(--top-edge) - var(--bottom-edge) - var(--sheet-height) - 96px); }
+    body:has(#rpcStatus:not([hidden])) #tip { max-height:calc(var(--view-height) - var(--top-edge) - var(--bottom-edge) - var(--sheet-height) - 104px); }
     #loading { padding:80px 20px; text-align:center; font-size:12px; letter-spacing:.06em; overflow-wrap:anywhere; }
     @media (max-height:500px) { #sheet.expanded { max-height:calc(var(--view-height) * .58); } }
     @media (prefers-reduced-motion:reduce) { .dot, #loading .ring { animation:none; } }
+  }
+
+  :root { --panel-surface:#0a0e1c; --panel-muted:#a2aec6; }
+  :focus-visible { outline:2px solid var(--l2); outline-offset:3px; }
+  button:disabled { cursor:wait; opacity:.65; }
+  #rpcStatus { pointer-events:auto; max-width:calc(100vw - 24px); letter-spacing:0; }
+  #rpcStatus:not([hidden]) { display:flex; gap:10px; align-items:center; }
+  #rpcRetry { flex-shrink:0; min-height:36px; }
+  #toolNav { position:fixed; top:72px; left:50%; transform:translateX(-50%); display:flex; gap:6px; z-index:12; padding:6px; background:var(--panel-surface); max-width:calc(100vw - 610px); flex-wrap:wrap; justify-content:center; }
+  #toolNav button { min-height:36px; white-space:nowrap; }
+  [data-open][aria-expanded="true"] { border-color:var(--l2); background:rgba(76,195,255,.14); }
+  .feature-panel { position:fixed; top:var(--tools-bottom,124px); left:50%; transform:translateX(-50%); width:min(510px,calc(100vw - 32px)); max-height:calc(100dvh - var(--tools-bottom,124px) - 24px); overflow:auto; z-index:15; padding:18px; background:var(--panel-surface); line-height:1.55; }
+  .feature-panel header { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:12px; }
+  .feature-panel h2 { font-size:15px; margin:0; letter-spacing:.03em; }
+  .feature-panel h3 { font-size:13px; margin:18px 0 8px; }
+  .feature-panel p { margin:8px 0 12px; overflow-wrap:anywhere; }
+  .feature-panel .help { color:var(--panel-muted); font-size:12px; }
+  .feature-panel a { text-decoration:underline; text-underline-offset:3px; }
+  .feature-panel input:not([type=checkbox]), .feature-panel select { width:100%; min-height:40px; min-width:0; }
+  .feature-panel button { min-height:40px; }
+  .feature-panel label { display:block; margin-bottom:5px; }
+  .form-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .feature-panel form, .feature-panel fieldset { margin:14px 0; }
+  .feature-panel fieldset { border:1px solid var(--line); border-radius:8px; padding:10px; }
+  .feature-panel legend { padding:0 6px; }
+  .feature-panel .check { display:flex; align-items:center; gap:10px; min-height:40px; margin:0; cursor:pointer; }
+  .feature-panel .check input { width:18px; height:18px; min-width:18px; min-height:18px; margin:0; accent-color:var(--l2); }
+  .lookup-line { display:flex; gap:8px; }
+  .lookup-line input { flex:1; }
+  .notice { border-inline-start:2px solid var(--gold); padding:8px 12px; color:var(--gold); background:rgba(255,209,102,.06); }
+  .result-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin:16px 0; font-variant-numeric:tabular-nums; }
+  .result-grid dt { font-size:12px; color:var(--panel-muted); }
+  .result-grid dd { margin:3px 0 0; font-size:15px; overflow-wrap:anywhere; }
+  .estimate-table { width:100%; border-collapse:collapse; font-size:12px; font-variant-numeric:tabular-nums; table-layout:fixed; }
+  .estimate-table caption { text-align:start; margin-bottom:8px; color:var(--panel-muted); }
+  .estimate-table th, .estimate-table td { padding:8px 4px; border-bottom:1px solid var(--line); text-align:end; overflow-wrap:anywhere; }
+  .estimate-table th:first-child { text-align:start; width:27%; }
+  .estimate-table thead { color:var(--panel-muted); }
+  .estimate-table tfoot { color:var(--l1); }
+  .glossary { margin:0; }
+  .glossary dt { font-weight:650; color:var(--l2); margin-top:16px; }
+  .glossary dd { margin:4px 0 0; overflow-wrap:anywhere; }
+  .contract-row { padding:12px 0; border-bottom:1px solid var(--line); }
+  .contract-row code { display:block; overflow-wrap:anywhere; font-size:12px; margin:5px 0 8px; user-select:all; }
+  .contract-row a { margin-inline-start:12px; display:inline-flex; min-height:40px; align-items:center; }
+  .feature-panel [role=status] { overflow-wrap:anywhere; }
+  #toastStack { position:fixed; z-index:40; top:124px; right:16px; width:min(340px,calc(100vw - 32px)); display:grid; gap:8px; max-height:50dvh; overflow:auto; }
+  .toast { padding:12px; border:1px solid var(--l2); border-radius:12px; background:var(--panel-surface); box-shadow:0 8px 24px #0008; line-height:1.5; }
+  .toast p { margin:0 0 8px; }
+  .toast a { text-decoration:underline; }
+  .toast button { float:right; min-height:36px; }
+  .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; border:0; }
+  @media (prefers-reduced-motion:reduce) { .dot, .ring, .ev { animation:none !important; } }
+  @media (max-width:1100px) and (min-width:768px) and (min-height:501px) { #toolNav { top:70px; } }
+  @media (max-width:767px), (max-width:1023px) and (max-height:500px) {
+    #toolNav { position:static; transform:none; display:grid; grid-template-columns:1fr 1fr; grid-column:1 / -1; max-width:none; border:0; padding:0; gap:8px; }
+    #toolNav button { min-height:44px; }
+    #sheetTabs { display:flex; overflow-x:auto; padding:4px 8px 8px; scrollbar-width:thin; }
+    #sheetTabs button { flex:0 0 auto; min-width:80px; }
+    .feature-panel { position:static; transform:none; width:auto; max-height:none; margin:0; padding:8px 14px 18px; border:0; border-radius:0; box-shadow:none; overflow:visible; }
+    .feature-panel header { margin-bottom:8px; }
+    .feature-panel input:not([type=checkbox]), .feature-panel select { min-height:44px; font-size:16px; }
+    .feature-panel button, .contract-row a, .feature-panel .check { min-height:44px; }
+    .feature-panel .check input { min-width:18px; min-height:18px; }
+    #toastStack { top:calc(var(--view-top) + var(--top-edge) + 58px); right:var(--edge-right); width:calc(var(--view-width) - var(--edge-left) - var(--edge-right)); max-height:30dvh; }
+    .toast button { min-height:44px; }
+    #rpcStatus { top:calc(var(--view-top) + var(--top-edge) + 56px); width:calc(var(--view-width) - 16px); }
+    body:has(#rpcStatus:not([hidden])) #controls { top:calc(var(--view-top) + var(--top-edge) + 132px); max-height:calc(var(--view-height) - var(--top-edge) - var(--bottom-edge) - var(--sheet-height) - 140px); }
+    body:has(#rpcStatus:not([hidden])) #toastStack { top:calc(var(--view-top) + var(--top-edge) + 132px); }
+    .estimate-table th, .estimate-table td { padding:8px 2px; }
+    .result-grid { gap:8px; }
   }
 </style>
 </head>
@@ -125,7 +196,9 @@
 <canvas id="c" tabindex="0" aria-label="Swarm map. Arrow keys pan, plus and minus zoom, Enter fits. On mobile, N selects the next Pepe. On touch, drag to pan, pinch to zoom, double-tap to fit; tap a Pepe for details."></canvas>
 <div id="loading"><div class="ring"></div><div id="loadMsg">connecting to the swarm…</div></div>
 
-<div id="rpcStatus" role="status" aria-live="polite" aria-atomic="true"></div>
+<div id="rpcStatus" hidden><span id="rpcMessage" role="status" aria-live="polite"></span><button id="rpcRetry">Retry</button></div>
+<div id="toastAnnounce" class="sr-only" role="status" aria-live="polite"></div>
+<div id="toastStack" aria-label="Recent alerts"></div>
 
 <div id="top" class="glass">
   <h1>Swarm map</h1>
@@ -141,15 +214,21 @@
   <p id="walletError" class="mobile-only" role="status" hidden></p>
   <button id="btnFit" title="Reset zoom / pan (or double-click)">⤢ Fit</button>
   <p class="mobile-only control-help">Drag to pan · pinch to zoom · double-tap to fit. Tap a Pepe for details. Clear the wallet field to remove its highlight.</p>
+  <nav id="toolNav" class="glass" aria-label="Swarm tools">
+    <button data-open="calculator" aria-controls="calculator" aria-expanded="false">Calculator</button>
+    <button data-open="how" aria-controls="how" aria-expanded="false">How it works</button>
+    <button data-open="alerts" aria-controls="alerts" aria-expanded="false">Alerts</button>
+    <button data-open="contracts" aria-controls="contracts" aria-expanded="false">Contracts</button>
+  </nav>
   <p class="mobile-only control-help">Read-only · OG launch #1040</p>
   </div>
 </div>
 
 <div id="sheet">
   <button id="sheetToggle" class="mobile-only" aria-expanded="false" aria-controls="sheetBody" aria-label="Expand Stats, Holders and Events">
-    <span><small>Active Pepes</small><strong id="mActive">–</strong></span>
-    <span><small>Total weight</small><strong id="mWeight">–</strong></span>
-    <span><small>Backing · ETH</small><strong id="mBack">–</strong></span>
+    <span><small>Active Pepes</small><strong id="mActive">Loading...</strong></span>
+    <span><small>Total weight</small><strong id="mWeight">Loading...</strong></span>
+    <span><small>Backing · ETH</small><strong id="mBack">Loading...</strong></span>
     <span id="sheetChevron" aria-hidden="true">⌃</span>
   </button>
   <div id="sheetBody">
@@ -157,24 +236,91 @@
     <button id="tabStats" role="tab" aria-selected="true" aria-controls="stats">Stats</button>
     <button id="tabHolders" role="tab" aria-selected="false" aria-controls="lb" tabindex="-1">Holders</button>
     <button id="tabEvents" role="tab" aria-selected="false" aria-controls="tick" tabindex="-1">Events</button>
+    <button id="tabCalculator" role="tab" aria-selected="false" aria-controls="calculator" tabindex="-1">Calculator</button>
+    <button id="tabHow" role="tab" aria-selected="false" aria-controls="how" tabindex="-1">How it works</button>
+    <button id="tabAlerts" role="tab" aria-selected="false" aria-controls="alerts" tabindex="-1">Alerts</button>
+    <button id="tabContracts" role="tab" aria-selected="false" aria-controls="contracts" tabindex="-1">Contracts</button>
   </div>
   <div id="sheetPanels">
 <div id="stats" class="glass">
-  <div class="k">Active Pepes</div><div class="v" id="hActive">–</div>
-  <div class="k">L1 / L2 / L3</div><div class="v" id="hLevels">–</div>
-  <div class="k">Total weight</div><div class="v" id="hWeight">–</div>
-  <div class="k">ETH per weight</div><div class="v" id="hEpw">–</div>
-  <div class="k">Total backing <small>credited + backlog</small></div><div class="v" id="hBack">–</div>
-  <div class="k">Backlog stream ends in</div><div class="v" id="hCount">–</div>
+  <div class="k">Active Pepes</div><div class="v" id="hActive">Loading...</div>
+  <div class="k">L1 / L2 / L3</div><div class="v" id="hLevels">Loading...</div>
+  <div class="k">Total weight</div><div class="v" id="hWeight">Loading...</div>
+  <div class="k">ETH per weight</div><div class="v" id="hEpw">Loading...</div>
+  <div class="k">Total backing <small>credited + backlog</small></div><div class="v" id="hBack">Loading...</div>
+  <div class="k">Backlog stream ends in</div><div class="v" id="hCount">Loading...</div>
   <div class="hr"></div>
-  <div class="k">OG price</div><div class="v" id="hPrice">–</div>
-  <div class="k">ETH / USD <small>Chainlink</small></div><div class="v" id="hUsd">–</div>
+  <div class="k">OG price</div><div class="v" id="hPrice">Loading...</div>
+  <div class="k">ETH / USD <small>Chainlink</small></div><div class="v" id="hUsd">Loading...</div>
   <div class="hr"></div>
-  <div class="k">Highlighted <span id="hHlAddr"></span></div><div class="v gold" id="hMe">–</div>
+  <div class="k">Highlighted <span id="hHlAddr"></span></div><div class="v gold" id="hMe">Loading...</div>
 </div>
 
-<div id="lb" class="glass"><h3>Top holders · by weight</h3><div id="lbList"></div></div>
+<div id="lb" class="glass"><h3>Top holders · by weight</h3><div id="lbList">Loading...</div></div>
 <div id="tick" class="glass"><h3>Live events</h3><div id="tickList"><span id="eventEmpty" style="color:var(--mut)">New events appear here while you watch.</span></div></div>
+
+<section id="calculator" class="glass feature-panel" aria-labelledby="calculatorTitle" hidden>
+  <header><h2 id="calculatorTitle">Calculator</h2><button data-close="calculator" class="desktop-only" aria-label="Close Calculator">Close</button></header>
+  <p class="notice">Live estimate, not a promise.</p>
+  <div class="form-grid">
+    <div><label for="calcLevel">Target level</label><select id="calcLevel"><option value="1">L1 · weight 1</option><option value="2">L2 · weight 2</option><option value="3">L3 · weight 4</option></select></div>
+    <div><label for="calcFrom">Starting level</label><select id="calcFrom"><option value="0">Inactive</option><option value="1">L1</option><option value="2">L2</option><option value="3">L3</option></select></div>
+  </div>
+  <dl class="result-grid"><div><dt>Weight</dt><dd id="calcWeight">1</dd></div><div><dt>Cumulative burn</dt><dd id="calcBurn">50,000 OG</dd></div><div><dt>Activation at spot price</dt><dd id="calcCost">Loading...</dd></div><div><dt>Burn from starting level</dt><dd id="calcUpgrade">Loading...</dd></div></dl>
+  <p class="help">Burns: L1 50,000 · L2 150,000 · L3 400,000 OG total. Upgrades burn only the difference. Spot price excludes slippage and gas.</p>
+  <p id="calcPerWeight" class="help">Loading... ETH per hour per weight.</p>
+  <table class="estimate-table"><caption id="calcCaption">Estimated ETH for L1 · weight 1</caption><thead><tr><th scope="col">Source</th><th scope="col">Hour</th><th scope="col">Day</th><th scope="col">30 days</th></tr></thead><tbody><tr id="calcStream"><th scope="row">Backlog</th><td colspan="3">Loading...</td></tr><tr id="calcFees"><th scope="row">Fees · 24h</th><td colspan="3">Loading...</td></tr></tbody><tfoot><tr id="calcTotal"><th scope="row">Total</th><td colspan="3">Loading...</td></tr></tfoot></table>
+  <p id="feeStatus" class="help" role="status">Open Calculator to load the last 24 hours of fee events.</p>
+  <p class="help">Rates hold current price, volume and total weight constant. Backlog projections stop at the current stream end; the stream may be rescheduled. Ordinary fees use RewardsReceived.normal, excluding surplus to avoid counting backlog twice.</p>
+  <h3>Simple payback</h3><p id="calcPayback">Loading...</p><p class="help">Activation cost in ETH ÷ estimated ETH per day. This changes as volume, price and total weight change. It does not compound rewards or predict profit.</p>
+  <form id="calcLookup"><label for="calcAccount">Pepe ID or wallet <span class="help">(optional)</span></label><div class="lookup-line"><input id="calcAccount" placeholder="123 or 0x…" autocomplete="off" spellcheck="false" aria-describedby="calcLookupResult"><button type="submit">Look up</button></div></form>
+  <div id="calcLookupResult" role="status">Enter a Pepe ID or wallet to see its level, pending ETH and weight share.</div>
+</section>
+<section id="how" class="glass feature-panel" aria-labelledby="howTitle" hidden>
+  <header><h2 id="howTitle">How it works</h2><button data-close="how" class="desktop-only" aria-label="Close How it works">Close</button></header>
+  <p>This map reads Ethereum. It never connects a wallet or sends a transaction.</p>
+  <dl class="glossary">
+    <dt>OG token</dt><dd>OG is the token used to activate and upgrade Swarm Pepes. It trades in the OG/ETH pool.</dd>
+    <dt>Swarm Pepe NFTs</dt><dd>Each Pepe is a collectible NFT. Active Pepes share ETH rewards by weight.</dd>
+    <dt>Activation and upgrades</dt><dd>Activation burns OG: a transfer to <code>0x000000000000000000000000000000000000dEaD</code>. Cumulative burns are 50,000 OG for L1, 150,000 for L2 and 400,000 for L3. An upgrade burns only the difference.</dd>
+    <dt>Levels, weights and map colors</dt><dd><span class="l1">L1 is green, weight 1.</span> <span class="l2">L2 is blue, weight 2.</span> <span class="l3">L3 is magenta, weight 4.</span> A weight of 4 earns four times a weight of 1 at the same moment. Gold highlights a wallet.</dd>
+    <dt>ETH hook fee</dt><dd>The ordinary fee is 3.5% of the ETH side of buys and sells: 1% goes to the team and 2.5% to active Pepes by weight.</dd>
+    <dt>Launch-hour fee decay</dt><dd>During the first hour, the buy fee falls linearly from 50% to 3.5%. Sells stay at 3.5%. The extra launch fee goes into backlog.</dd>
+    <dt>Backlog and the stream</dt><dd>Backlog holds launch surplus and fees received when no Pepes are active. It streams linearly over 30 days while there is active weight. New surplus or a change in active weight can restart that schedule.</dd>
+    <dt>Pending ETH</dt><dd>Pending is the ETH a Pepe has earned so far. Rewards follow the NFT when it transfers to a new owner. A brighter map node has more pending ETH.</dd>
+    <dt>Exit and auction</dt><dd>After the 24-hour activation or upgrade lock, an owner can exit to collect pending ETH. The Pepe becomes inactive and goes to a 36-hour Dutch auction. Its OG price falls over time toward a floor. The original burn is not refunded.</dd>
+  </dl>
+  <p><a href="https://og.sites.imd.fun" target="_blank" rel="noopener noreferrer">Visit the official OG site ↗</a></p>
+</section>
+<section id="alerts" class="glass feature-panel" aria-labelledby="alertsTitle" hidden>
+  <header><h2 id="alertsTitle">Alerts</h2><button data-close="alerts" class="desktop-only" aria-label="Close Alerts">Close</button></header>
+  <p class="notice">Alerts only work while this page is open. Reads pause in a hidden tab; events catch up when you return.</p>
+  <form id="alertForm">
+    <label class="check"><input id="alertEnabled" type="checkbox">Enable in-page alerts</label>
+    <label for="alertScope">Watch</label><select id="alertScope"><option value="all">All events</option><option value="wallet">Only my highlighted wallet</option><option value="ids">Specific Pepe IDs</option></select>
+    <p id="alertWallet" class="help"></p>
+    <div id="alertIdsField" hidden><label for="alertIds">Pepe IDs, separated by commas</label><input id="alertIds" placeholder="12, 34, 56" inputmode="numeric" aria-describedby="alertStatus"></div>
+    <fieldset><legend>Event types</legend>
+      <label class="check"><input id="alertAuction" type="checkbox">New auction listings</label>
+      <label class="check"><input id="alertActivation" type="checkbox">Activations and upgrades</label>
+      <label class="check"><input id="alertExit" type="checkbox">Exits</label>
+      <label class="check"><input id="alertSwap" type="checkbox">Big swaps</label>
+      <label for="alertThreshold">Swap size above · ETH</label><input id="alertThreshold" type="number" value="1" min="0" step="any" inputmode="decimal" aria-describedby="alertStatus">
+    </fieldset>
+    <p class="help">Wallet swaps match the transaction sender; routers can obscure who traded. Pepe IDs do not identify swaps. Auction listings match the exiting owner in the same transaction.</p>
+    <label class="check"><input id="alertSound" type="checkbox">Play a short sound</label>
+    <button type="button" id="enableNotifications">Enable browser notifications</button>
+    <p id="notificationStatus" class="help" role="status">Optional. Permission is requested only when you click.</p>
+    <button type="submit">Save alerts</button>
+    <p id="alertStatus" role="status" class="help">Alerts are off. Choose what to watch, then save.</p>
+  </form>
+</section>
+<section id="contracts" class="glass feature-panel" aria-labelledby="contractsTitle" hidden>
+  <header><h2 id="contractsTitle">Contracts</h2><button data-close="contracts" class="desktop-only" aria-label="Close Contracts">Close</button></header>
+  <p class="help">Ethereum mainnet · addresses used by this map.</p>
+  <div id="contractList"></div><p id="copyStatus" role="status" class="help"></p>
+  <p class="help">The pool ID is a bytes32 identifier, not an address. Its Etherscan link opens the PoolManager that hosts it.</p>
+</section>
   </div>
   </div>
 </div>

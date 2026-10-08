@@ -3,6 +3,7 @@ import { createRequire } from 'node:module';
 const { ethers } = createRequire(import.meta.url)('../ethers.umd.min.js');
 export const DIST = '0xd450ea80aeC46B8bFfdf0C4F44d3964489B613f2';
 export const NFT = '0x999ce0CE8C5f7661e0c74a568FfE27CEB9177bDB';
+export const AUCTION = '0xb0d2d2Cfe7A1b14d1f34135C3C7a8d152c4262e9';
 export const PM = '0x000000000004444c5dc75cB358380D2e3dE08A90';
 export const POOL = '0x5f95e64cf8e8f4e4376c1d97b5959dc479abf7b191ba0b286faeb2ec4180a2f9';
 const abi = new ethers.Interface([
@@ -15,6 +16,7 @@ const abi = new ethers.Interface([
 ]);
 const mc = new ethers.Interface(['function aggregate3((address target,bool allowFailure,bytes callData)[]) payable returns((bool success,bytes returnData)[])']);
 const events = new ethers.Interface([
+  'event AuctionListed(uint256 indexed tokenId,uint256 startPrice,uint256 startedAt)',
   'event Activated(uint256 indexed tokenId,address indexed owner,uint8 level,uint256 burned)',
   'event Upgraded(uint256 indexed tokenId,address indexed owner,uint8 oldLevel,uint8 newLevel,uint256 burned)',
   'event Exited(uint256 indexed tokenId,address indexed owner,uint256 ethPaid)',
@@ -24,11 +26,11 @@ const events = new ethers.Interface([
 export const BASE = 30000000;
 export function fixture() {
   const owners = [DIST.toLowerCase(), NFT.toLowerCase(), PM.toLowerCase()];
-  const state = { head:BASE, calls:[], fail: null, delay:0, activeImages:0, maxImages:0, maxHttp:0, activeHttp:0, imageIds:[], partial:false, variant:0, logs:[], minted:36 };
+  const state = { head:BASE, calls:[], fail: null, delay:0, activeImages:0, maxImages:0, maxHttp:0, activeHttp:0, imageIds:[], partial:false, variant:0, logs:[], minted:36, blockSeconds:12, streamSeconds:2592000, backlog:10n**18n };
   state.population = Array.from({length:30},(_,i)=>({id:i+1, owner:owners[i%3], level:i%3+1, pending:BigInt(i+1)*10n**13n, last:1800000000}));
   state.log = (name, args, block, index=0) => {
     const encoded = events.encodeEventLog(events.getEvent(name),args);
-    const log = { address:name==='Swap'?PM:DIST, topics:encoded.topics,data:encoded.data,blockNumber:ethers.toQuantity(block),logIndex:ethers.toQuantity(index),transactionHash:ethers.keccak256(ethers.toUtf8Bytes(`fixture-${block}`)) };
+    const log = { address:name==='Swap'?PM:name==='AuctionListed'?AUCTION:DIST, topics:encoded.topics,data:encoded.data,blockNumber:ethers.toQuantity(block),logIndex:ethers.toQuantity(index),transactionHash:ethers.keccak256(ethers.toUtf8Bytes(`fixture-${block}`)) };
     state.logs.push(log); return log;
   };
   state.burst = () => {
@@ -43,7 +45,7 @@ export function fixture() {
     const p=state.population.find(n=>n.id===Number(args.length ? args[0] : -1));
     const value = ({totalMinted:()=>state.minted, ownerOf:()=>p?.owner||owners[0],level:()=>p?.level||0,pending:()=>p?.pending||0n,lastActivation:()=>p?.last||0,
       totalWeight:()=>state.population.reduce((s,n)=>s+2**(n.level-1),0),activePerLevel:()=>state.population.filter(n=>n.level===Number(args.length ? args[0] : -1)).length,
-      backlogLeft:()=>10n**18n,streamEnd:()=>1802592000,unfundedFees:()=>0,getEthBalance:()=>2n*10n**18n,getCurrentBlockTimestamp:()=>1800000000,
+      backlogLeft:()=>state.backlog,streamEnd:()=>1800000000+(state.head-BASE)*state.blockSeconds+state.streamSeconds,unfundedFees:()=>0,getEthBalance:()=>2n*10n**18n,getCurrentBlockTimestamp:()=>1800000000+(state.head-BASE)*state.blockSeconds,
       getSlot0:()=>[2n**110n,0,0,3000],latestRoundData:()=>[1,2500n*10n**8n,1800000000,1800000000,1],tokenURI:()=>uri(Number(args.length ? args[0] : -1))})[name]();
     return {success:true,returnData:abi.encodeFunctionResult(name,Array.isArray(value)?value:[value])};
   }
@@ -62,7 +64,9 @@ export function fixture() {
       if(fail) { await route.fulfill({status:fail.status||200,contentType:'application/json',body:JSON.stringify(fail.status===429?{}:{jsonrpc:'2.0',id:body.id,error:fail.error})});return; }
       let value;
       if(body.method==='eth_blockNumber') value=ethers.toQuantity(state.head);
-      else if(body.method==='eth_getLogs') {const f=body.params[0];value=state.logs.filter(l=>l.address.toLowerCase()===f.address.toLowerCase() && Number(l.blockNumber)>=Number(f.fromBlock) && Number(l.blockNumber)<=Number(f.toBlock));}
+      else if(body.method==='eth_getLogs') {const f=body.params[0];value=state.logs.filter(l=>[f.address].flat().some(a=>a.toLowerCase()===l.address.toLowerCase()) && (!f.topics?.[0] || [f.topics[0]].flat().includes(l.topics[0])) && Number(l.blockNumber)>=Number(f.fromBlock) && Number(l.blockNumber)<=Number(f.toBlock));}
+      else if(body.method==='eth_getBlockByNumber') value={number:body.params[0],timestamp:ethers.toQuantity(1800000000+(Number(body.params[0])-BASE)*state.blockSeconds)};
+      else if(body.method==='eth_getTransactionByHash') value={from:owners[0]};
       else if(body.method==='eth_call') {
         if(entry.batch) value=mc.encodeFunctionResult('aggregate3',[entry.batch.map(result)]);
         else value=result({callData:body.params[0].data}).returnData;

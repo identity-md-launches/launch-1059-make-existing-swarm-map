@@ -1,23 +1,37 @@
 # OG · Swarm map
 
-A plain HTML/JavaScript, read-only visualizer for OG launch #1040 and its Swarm Pepe distributor on Ethereum mainnet. No wallet, signing, transactions, analytics, remote fonts, or image hosts. The existing canvas, neon colors, desktop panels and mobile sheet are retained.
+A read-only, plain HTML/JavaScript map for OG launch #1040 on Ethereum mainnet. The original neon canvas, desktop stats/holders/events, mobile sheet, batched state reads and image cache remain. No wallet connection, signing, transactions, trackers, remote fonts or new runtime dependencies.
 
-![Live Swarm map](screenshot.png)
+## Use the site
 
-## Use the map
+- **Map:** drag to pan, scroll/pinch to zoom, double-click/double-tap or Fit to reset. Hover a node on desktop or tap it on a phone. Highlight a wallet through the field, a holder, or `?addr=0x…`; the choice persists locally.
+- **Calculator:** choose target and starting levels. See weight, cumulative burn, the incremental upgrade burn, ETH/USD cost at pool spot price, backlog/ordinary fee/total estimates by hour, day and 30 days, and simple payback. Look up a Pepe ID or wallet for level, pending ETH and weight share. A specific active Pepe fills its starting level. A wallet summarizes its active Pepes by level.
+- **How it works:** plain-language glossary, map colors and the official OG site link.
+- **Alerts:** choose all events, the highlighted wallet, or specific Pepe IDs; select listings, activations/upgrades, exits and/or swaps above an ETH threshold. Click **Save alerts**. In-page toasts are enabled separately from optional browser notifications and sound. Notification permission is requested only by the explicit button. Choices persist in localStorage; storage denial is reported and choices still work for the current visit.
+- **Contracts:** copy the five contract addresses or pool ID, or open their Etherscan links. A pool ID is not an address, so its link opens the PoolManager. Clipboard failure selects the full value for manual copying.
 
-Nodes are active Pepes, clustered by owner. Green L1, blue L2 and magenta L3 carry weights 1, 2 and 4. Brighter nodes have more pending ETH. New swaps pulse from the pool; activations, upgrades, rewards and exits appear in the ticker. Hover a node on desktop or tap it on a phone for details.
+Desktop tool buttons open a scrollable panel above the map. On mobile, **Menu** opens the same tools, and the sheet has Stats / Holders / Events / Calculator / How it works / Alerts / Contracts tabs. Swipe the tab row to reach more tabs. Keyboard Left/Right/Home/End switches tabs; Escape closes the sheet/menu or desktop tool and restores focus. Canvas arrows pan, +/− zoom, Enter/0 fits; on mobile, N selects the next Pepe. All new controls have visible focus.
 
-- Desktop: drag to pan, scroll to zoom, double-click or **Fit** to reset.
-- Mobile: drag, pinch, double-tap to fit; tap empty space or close the card to dismiss details. Expand the bottom summary for **Stats / Holders / Events**. **Menu** contains wallet highlighting and Fit.
-- Keyboard: arrows pan, +/− zoom, Enter/0 fits. On mobile layout, N selects the next Pepe. Arrow keys switch sheet tabs; Enter/Space selects a holder; Escape closes overlays and returns focus.
-- Highlight an address using the field, a holder row, or `?addr=0x…`. Clear the field to remove the highlight. The choice stays in localStorage.
+**Alerts only work while the page is open.** The existing visibility behavior pauses all reads when hidden and catches up on return; this is not background push or a monitoring service. Reload starts from current state and does not replay past alerts. Toasts stay until dismissed or displaced by three newer alerts. Sound uses a locally generated Web Audio tone; after reload, click Save alerts to unlock audio again. Browser/OS notification and audio policies still apply.
 
-Launch replay, its speed selector, progress UI and URL behavior are removed. The ticker starts empty and shows new events while the page is open.
+Wallet swap alerts inspect the transaction sender because the pool's sender is often a router. Smart accounts, relayers and third-party execution may not identify the end trader. Pepe-ID filters exclude swaps, which carry no Pepe ID. Auction listings are matched to the exiting owner using the same transaction and token ID. Alerts use confirmed successful read cycles; failed sender lookups are explicitly reported as skipped.
 
-## Install, preview, rebuild
+## Calculator data and assumptions
 
-Use Node.js 20+ (this worker used Node 24.21.0, npm 11.19.0). Runtime and build require no installation: ethers 6.13.4 is already bundled locally. Existing manifests, lockfile and build configuration are unchanged.
+Every output is labelled **estimate, not a promise**. L1/L2/L3 weights are 1/2/4; cumulative OG burns are 50,000/150,000/400,000. Upgrade burn is target cumulative burn minus the starting level's cumulative burn. Targets below the starting level do not imply a downgrade. Activation payback uses the full target activation cost.
+
+- Activation ETH cost = cumulative OG burn / pool OG per ETH. USD uses the existing Chainlink ETH/USD value. These are spot valuations, excluding gas and slippage.
+- Backlog ETH/hour/weight = `backlogLeft / (streamEnd - now) / totalWeight * 3600`. Between snapshots the remaining backlog advances linearly from the last block's values. Projected backlog earnings stop at the existing stream end. A new schedule can change them.
+- Ordinary ETH/hour/weight = sum of `RewardsReceived.normal` in the complete last 24h event window / total weight / 24. Surplus is excluded. Multiply each rate by the chosen level's weight and period; add the two sources for the total.
+- Payback days = activation ETH cost / displayed total ETH per day. Zero reward rate has no finite payback. The estimate changes with volume, price and total weight and does not establish that the current rate will continue until payback.
+
+The fee window loads **on opening Calculator**, not at startup. A timestamp binary search locates the exact 24h block boundary. Only RewardsReceived logs are scanned, in at most 50-block ranges through the existing serialized, paced RPC transport. Completed chunks are cached under `swarm:1:<distributor>:fees24:v1` and reused after interruption/reload. Partial scans never become a zero-volume estimate. A complete window shows its ending time and refreshes every five minutes while Calculator is visible. Closing it or hiding the page pauses further history work. The first full scan can take several minutes or longer under provider restrictions. This is bounded fee analysis, with no launch replay, historical map reconstruction or historical alerts.
+
+The scan requires historical log access for the full 24h. Some listed public providers restrict this, require an account, reject CORS, or rate-limit requests. The UI keeps the incomplete state and retries; it does not invent data. The pre-existing `?rpc=https://your-node.example` override can use a compatible endpoint, replacing the rotation list. Never put a private key in a URL or in this site.
+
+## Install, preview and rebuild
+
+Use Node.js 20+. The runtime and production build need **no installation**. The existing ethers 6.13.4 UMD file is local; root `package.json` and build configuration are unchanged.
 
 ```bash
 npm run build
@@ -25,7 +39,7 @@ python3 -m http.server 8000 --directory dist
 # Open http://127.0.0.1:8000/
 ```
 
-`build.mjs` copies five complete files into `dist/`: `index.html`, `swarm.js`, `ethers.umd.min.js`, `favicon.svg`, and `screenshot.png`. Use HTTP(S), not `file://`. All runtime asset URLs are relative; the export works under a static subpath without routing rewrites or a backend.
+`build.mjs` copies five files unchanged: `index.html`, `swarm.js`, `ethers.umd.min.js`, `favicon.svg`, `screenshot.png`. All runtime asset URLs are relative. Serve the entire export over HTTP(S), including when using a gateway subpath. No backend, route rewrites or service worker is needed.
 
 Development checks use the existing locked dependencies in `web/`:
 
@@ -34,79 +48,40 @@ npm ci --prefix web --ignore-scripts --no-audit --no-fund
 npm --prefix web run typecheck
 (cd web && npx playwright install chromium)
 npm --prefix web run validate
+node web/validate-tools.mjs
 node web/live-check.mjs
 ```
 
-The production JavaScript is checked with TypeScript `allowJs`, `checkJs`, `noEmit`; the ethers UMD boundary remains `any`. Validation serves the actual export under `/preview/`, launches Chromium and closes both browser and server within the command. `validate` uses deterministic RPC fixtures for touch/keyboard/layout and failure scenarios; the separate live check requires public RPC connectivity. Set `CHROMIUM_PATH` to use an existing browser, or `PLAYWRIGHT_BROWSERS_PATH` for a custom Playwright installation. Linux also needs Chromium's system libraries and fonts.
+Set `CHROMIUM_PATH` to an installed Chromium if necessary. Typecheck uses TypeScript `allowJs`, `checkJs`, `noEmit`, with the existing ethers UMD boundary typed as `any`. Each validation script owns and closes its local preview server and browser. They serve the actual `dist/` under `/preview/`. RPC fixtures and API test doubles are development-only; nothing test-specific is imported by the production site. Validation writes reports/screenshots under `artifacts/`.
 
-Results and screenshots are written under `artifacts/`. The optional prior-version static HUD comparison runs only when `test/scratch/baseline/{index.html,swarm.js}` exists; later checkouts report a skip. Test fixtures never enter `dist/` or the live site. No vendored package registry is needed.
+In this restricted worker, the existing `web/package.json` and lockfile were copied to `/tmp/swarm-check`; `npm ci --prefix /tmp/swarm-check --cache /tmp/swarm-npm-cache --ignore-scripts --no-audit --no-fund` installed the exact locked dev tools outside the repository. A temporary module resolver in `test/scratch/` let the same scripts use that installation. No package manifests, lockfiles, ignore rules or existing build configuration were changed.
 
-## Publish
+## Publish under the same label
 
-Publish the **contents of `dist/`** together to the static host, or pin that directory to IPFS. The publisher serves the supplied export and does not rebuild. The existing name is `og-swarm-map.site.identitymd.eth`, accessible at `https://og-swarm-map.site.identitymd.eth.limo`. Update its contenthash only through the existing authorized publishing workflow. This assignment prepares the next export; it does not publish a CID, modify ENS, or deploy contracts.
+Publish the **contents of `dist/`** through the existing IdentityMD static-site publisher using label **`og-swarm-map`**. Its existing name is `og-swarm-map.site.identitymd.eth`, at [the Swarm map gateway](https://og-swarm-map.site.identitymd.eth.limo). Pin the complete directory to IPFS and update that existing name through the authorized publisher; do not create another label or deploy a contract. The publisher serves the supplied export without rebuilding it.
 
-Keep source, the existing `web/package.json` / `web/package-lock.json`, `DESIGN.md`, validation code and all five `dist/` files in the submission. Do not include dependencies, browser downloads, package caches or archives. The existing ignore rule already excludes `node_modules/` at every depth; no ignore file was changed.
+This worker supplies the rebuilt source/export for that label. **No publishing capability was exposed in this session, so no new CID or ENS contenthash update is claimed.** The prior CID recorded by the project input is `bafybeifpa5kvi7luc4txkvxo2ixvy3k3gkh3jo5sgf435g5xcrlv63626u`; it is not a CID for this upgrade.
 
-## RPC behavior
+Submit the source, existing lockfile, documentation, development checks and all five `dist/` files. Do not submit node_modules, caches, browser downloads, package archives or scratch scaffolding. The existing ignore rule already covers nested node_modules; it was not changed. This task does not edit Git metadata or create a submodule.
 
-**Startup:** read `eth_blockNumber`, then pin all discovery and state reads to that block. The deployed distributor exposes `level(id)` but **has no enumerable active-ID view**. The NFT's verified mint code assigns IDs from 1 through `totalMinted()`, with a maximum of 5,000. Therefore startup first reads that count and discovers nonzero levels in bounded Multicalls of at most 2,000 IDs. It then builds the authoritative active state in **one Multicall3 batch**: owners, levels, pending ETH, last activation, totals, backlog, balance, pool price and initial Chainlink price.
+## Preserved RPC behavior
 
-This necessary discovery preflight means startup is not literally a single total RPC/Multicall request. An attempted single batch covering every minted token's fields produced a 2.27 MB JSON calldata string and was rejected by the public RPC's request-size limit. At the live population checked here, the implemented path used four HTTP requests before images: block number, supply, one level discovery batch, and one active-state batch. There is no historical `getLogs` request, deploy-block constant, indexer, or hardcoded active-token list. Contract evidence: [verified distributor ABI/source](https://sourcify.dev/server/v2/contract/1/0xd450ea80aeC46B8bFfdf0C4F44d3964489B613f2?fields=abi,compilation,sources), [verified NFT ABI/source](https://sourcify.dev/server/v2/contract/1/0x999ce0CE8C5f7661e0c74a568FfE27CEB9177bDB?fields=abi,compilation,sources).
+Startup discovers active IDs from the NFT's `totalMinted()` and distributor levels in bounded Multicalls of at most 2,000 IDs, then reads the complete active state in one atomic Multicall. All state is pinned to the same block. The contract has no enumerable active-ID view, so that preflight remains necessary. No logs are requested at startup.
 
-**Live updates:** one non-overlapping polling cycle, scheduled 15 seconds after completion. `eth_blockNumber` goes first; an unchanged block causes no log, state or price reads. For new blocks, fetch distributor and pool logs for the next range, at most 50 blocks inclusive per request. One range is processed per cycle, bounding catch-up after a long-hidden tab. Read one active-state Multicall at the range's end, including owners so NFT transfers also update the map. Only commit the cursor after both log filters and the entire required snapshot succeed. The counts and weighted population must match distributor totals. Missing subcalls preserve the previous state; a population mismatch or a backward head triggers a new view snapshot. Visual event effects cannot overwrite newer node data.
+The original nonoverlapping loop checks `eth_blockNumber` every 15 seconds after completion and skips work on an unchanged head. New logs cover at most 50 blocks per cycle. AuctionListed is added to the existing distributor filter as a second address/topic, preserving two live log requests per cycle (distributor/auction and pool). The snapshot and cursor only commit after both filters and required state reads succeed. Lookup of an inactive Pepe uses one on-demand Multicall. Wallet big-swap alerts add an on-demand transaction-sender read.
 
-**Rate limits:** a shared transport serializes HTTP requests and leaves at least 350ms between them. HTTP 429 and JSON-RPC rate-limit/quota errors show **RPC busy, retrying** in a small polite HUD status. Failed requests rotate to the next existing endpoint and impose a global exponential cooldown of 15, 30, then 60 seconds maximum. Generic failures also recover automatically. Data remains visible during retries. There are no hidden provider probes or provider-managed immediate retries.
+All producers share one HTTP queue, at least 350ms between requests, public endpoint rotation and exponential 15/30/60-second cooldown. Hidden tabs abort/pause work. Retry respects the current cooldown. The existing five-minute Chainlink gating and visible-art cache remain; at most four tokenURI subcalls share an image batch, and only local inline image data renders. New fee-cache and alert-preference keys do not replace the image or highlighted-wallet caches.
 
-**Background tabs:** `document.visibilityState` stops polling and image work while hidden, aborts an in-flight request and clears timers. Returning to visibility/focus resumes with a block-number check, respecting any cooldown.
+Current snapshots and fee cache do not detect same-height reorganizations. Public providers cannot guarantee availability. A window's displayed timestamp matters: previous complete history can remain visible during refresh/retry. This map has no authority over funds.
 
-**Art:** only visible nodes large enough to draw art, or opened node details, request `tokenURI`. At most four tokenURI subcalls run together in one Multicall; only one HTTP request runs at a time. Successful inline metadata/images are cached by chain, collection and token ID in localStorage and reused after reload. Storage failures fall back to memory; invalid metadata is deferred for a minute. No external image URLs are fetched. To refresh cached art after an NFT reveal, clear this site's `swarm:1:…:image:` storage entries.
+## Validation and design review
 
-**ETH/USD:** Chainlink is included at most once per five minutes, and only when a new block requires a state read. Failed attempts also wait five minutes. The last valid value remains visible.
+The final production build and JavaScript typecheck passed. The original interaction suite passed **67 checks**, and the new tools suite passed **33 checks** (100 total). A separate live RPC smoke check also passed: 130 active Pepes, weight 380, and a successful new-block refresh with no failed requests. The submission audit is below 8 MiB, including separate evidence conservatively. Actual commands, fixes, evidence and limitations for this assignment are recorded in [web/VALIDATION.md](web/VALIDATION.md). [DESIGN.md](DESIGN.md) describes the final tokens, typography, components, focus and responsive behavior. All six pinned Better Interface domains were reviewed, with browser inspection of the production export and corrections to observed findings. These are worker observations, not independent certification.
 
-The existing public list is PublicNode, LlamaRPC, Ankr, drpc and Cloudflare. `?rpc=https://your-node.example` preserves the existing custom endpoint override; it replaces the list, so rotation is unavailable in that mode. No keys are stored. Provider limits, availability and CORS vary; a free endpoint cannot guarantee continuous service. Very large future active populations may exceed a provider's limit for the single state batch. Long absences catch up gradually; reload starts a fresh current snapshot. Same-height chain reorganizations are not detected by block-number-only polling.
+Source contracts were checked against their verified [distributor](https://sourcify.dev/server/v2/contract/1/0xd450ea80aeC46B8bFfdf0C4F44d3964489B613f2?fields=abi,sources), [auction](https://sourcify.dev/server/v2/contract/1/0xb0d2d2Cfe7A1b14d1f34135C3C7a8d152c4262e9?fields=abi,sources) and [hook](https://sourcify.dev/server/v2/contract/1/0x22fded8abce0d93979ebb2a04cfc37c110abe0cc?fields=abi,sources) ABIs/source. All runtime addresses remain the constants already in `swarm.js`.
 
-## Contracts (Ethereum mainnet)
+## Files and license
 
-| | Address |
-|---|---|
-| OG token | [`0xce7eb1ad9e2e1c784ea05f7ea4a0fe625923d10a`](https://etherscan.io/address/0xce7eb1ad9e2e1c784ea05f7ea4a0fe625923d10a) |
-| OGHook (Uniswap v4 hook) | [`0x22fded8abce0d93979ebb2a04cfc37c110abe0cc`](https://etherscan.io/address/0x22fded8abce0d93979ebb2a04cfc37c110abe0cc) |
-| OGDistributor | [`0xd450ea80aeC46B8bFfdf0C4F44d3964489B613f2`](https://etherscan.io/address/0xd450ea80aeC46B8bFfdf0C4F44d3964489B613f2) |
-| OGAuction | [`0xb0d2d2Cfe7A1b14d1f34135C3C7a8d152c4262e9`](https://etherscan.io/address/0xb0d2d2Cfe7A1b14d1f34135C3C7a8d152c4262e9) |
-| Swarm Pepe NFT | [`0x999ce0CE8C5f7661e0c74a568FfE27CEB9177bDB`](https://etherscan.io/address/0x999ce0CE8C5f7661e0c74a568FfE27CEB9177bDB) |
-| Uniswap v4 PoolManager | [`0x000000000004444c5dc75cB358380D2e3dE08A90`](https://etherscan.io/address/0x000000000004444c5dc75cB358380D2e3dE08A90) |
-| OG/ETH pool id | `0x5f95e64cf8e8f4e4376c1d97b5959dc479abf7b191ba0b286faeb2ec4180a2f9` |
+`index.html` contains styles and controls; `swarm.js` contains canvas and read-only data/tools. The existing local asset files and `dist/` form the static site. `web/` contains locked development checks and the validation record. `artifacts/` contains separate evidence outputs; test fixtures and screenshots are not runtime dependencies. The existing root screenshot is retained from the prior version and is not evidence of the new panels.
 
-Read-only helpers: Multicall3 `0xcA11…CA11`, v4 StateView `0x7fFE…7227`, Chainlink ETH/USD `0x5f4e…8419`.
-
-### Values and permissions
-
-`activePerLevel(1..3)` and `totalWeight()` define population and weights. `pending(id)` includes already vested stream rewards. Total backing is the sum of active `pending` plus `backlogLeft()`; a Pepe's displayed backlog share is `backlog × weight / totalWeight`, assuming weights stay unchanged. Owners come from the NFT's `ownerOf`. All state fields in a refresh use the same block.
-
-The app has no permissions over funds: only public `eth_call`, `eth_blockNumber` and `eth_getLogs` are used. Calling the payable Multicall ABI through `eth_call` is simulated; no transaction or ETH is sent. Existing activation/burn/exit/auction flows remain contract-owned. Frontend invariants are complete active population, matching level counts/weight, atomic snapshot/cursor updates, and no fabricated values on failed required reads.
-
-## Validation
-
-On 2026-10-08, production build, JavaScript syntax check, TypeScript check and `git diff --check` passed. The final Chromium interaction run passed **69 checks** with no uncaught application errors or failed primary UI resources. It covered 320–430px portrait, 812×375 / 915×412 landscape, desktop restoration, touch gestures, keyboard/focus, sheet tabs, highlighting and Fit, plus HTTP/JSON rate limits, hidden visibility, range/cursor recovery, partial Multicalls, image cache/concurrency/storage denial and five-minute price gating. Static desktop panels matched the prior source at 1024, 1280 and 1440px after excluding the intentionally changed top controls and normalizing the empty ticker.
-
-`node web/live-check.mjs` also passed: blocks **26,148,755 → 26,148,757**, **126** active nodes, level counts **34 / 16 / 76**, weight **370**, zero startup log requests and no failed requests. Subsequent logs began after the snapshot block. Root `screenshot.png` is from this live run.
-
-Better Interface's six domains were reviewed against the final source/export: accessibility (status semantics, keyboard and targets), layout (responsive panels and retry-note clearance), writing (recoverable errors and empty ticker), typography (retained system fonts and 12px note), colors (retry note measured **13.33:1** against its opaque background), and UI (loading, live, busy, recovered, empty and cached-image states). A retry-note/menu overlap was corrected in `index.html:116`; partial snapshot/cursor handling was corrected in `swarm.js:435,797`; eager images were replaced in `swarm.js:503`. The authoritative state still needs the explicitly documented discovery preflight above.
-
-Remaining limits: no physical-device, screen-reader, native 200% zoom, OS text scaling, forced-colors or full animated-canvas contrast verification; no guarantee of anonymous availability across all public providers. Chromium's supplied MCP launcher lacked Chrome, so the worker used the existing locked Playwright package with Chromium installed under `/tmp`. Deterministic visibility/clock emulation is not a native OS background-tab test. The code remains JavaScript with a non-strict `checkJs` boundary. Forge, Slither and Aderyn were located but not run: this is a frontend-only repository, with no Foundry or contract change.
-
-Detailed worker evidence, source findings and all six domains' coverage/limitations are in [artifacts/validation.md](artifacts/validation.md), `interaction-results.json` and `live-results.json`. The workspace excludes `artifacts/` from Git; these are separate evidence outputs, and this README retains the results in the source submission. `DESIGN.md` records the implemented design. These checks are worker observations, not independent behavior certification. Fixture screenshots are labeled separately from live-chain screenshots.
-
-Packaging check: 24 candidate files, approximately **2.74 MB raw / 1.89 MB compressed**. Including separate evidence conservatively totals **5.22 MB raw**, below the **8 MiB** limit. All five export files match source bytes. No build/dependency/lockfile/ignore changes, generated dependencies, caches, archives or submodules are included.
-
-## Files
-
-- `index.html`, `swarm.js`: styles, controls, canvas and read-only data flow.
-- `ethers.umd.min.js`, `favicon.svg`, `screenshot.png`: complete local assets.
-- `dist/`: production static export.
-- `web/`: existing locked validation dependencies and development-only checks.
-- `DESIGN.md`, `artifacts/validation.md`: design and validation record.
-
-## License
-
-MIT; see [LICENSE](LICENSE). Unofficial community visualizer. Public chain values may lag or be unavailable.
+MIT; see [LICENSE](LICENSE). This is an unofficial community visualizer. Better Interface and Impeccable design-guidance attribution and licenses are retained in [web/design-guidance-LICENSE.txt](web/design-guidance-LICENSE.txt).
