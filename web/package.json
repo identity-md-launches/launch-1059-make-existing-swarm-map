@@ -1,0 +1,15 @@
+{
+  "name": "swarm-map-validation",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Development checks only; the site remains dependency-free HTML and JavaScript",
+  "scripts": {
+    "typecheck": "tsc --project tsconfig.json",
+    "validate": "node validate.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.64.0",
+    "typescript": "5.9.3"
+  }
+}

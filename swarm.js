@@ -74,7 +74,8 @@ async function getLogsChunked(filter, from, to) {
 }
 
 // ---------- helpers ----------
-const $ = (id) => document.getElementById(id);
+/** @template {string} K @param {K} id @returns {SwarmElements[K]} */
+const $ = (id) => /** @type {SwarmElements[K]} */ (document.getElementById(id));
 const short = (a) => a ? a.slice(0, 6) + '…' + a.slice(-4) : '';
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fE = (w, d = 4) => Number(ethers.formatEther(w)).toLocaleString('en-US', { maximumFractionDigits: d, minimumFractionDigits: Math.min(d, 2) });
@@ -103,11 +104,100 @@ const meta = new Map();     // id -> attributes
 // ---------- canvas ----------
 const cv = $('c'), ctx = cv.getContext('2d');
 let W = 0, H = 0, DPR = 1;
-function resize() { DPR = Math.min(2, window.devicePixelRatio || 1); W = innerWidth; H = innerHeight; cv.width = W * DPR; cv.height = H * DPR; }
-addEventListener('resize', resize); resize();
+const mobileQuery = matchMedia('(max-width:767px), (max-width:1023px) and (max-height:500px)');
+const motionQuery = matchMedia('(prefers-reduced-motion:reduce)');
+let mobile = mobileQuery.matches, selectedId = null;
+function resize() {
+  DPR = Math.min(2, window.devicePixelRatio || 1);
+  const v = window.visualViewport;
+  W = mobile && v ? v.width : innerWidth; H = mobile && v ? v.height : innerHeight;
+  cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
+  if (mobile) {
+    const style = document.documentElement.style;
+    style.setProperty('--view-height', H + 'px'); style.setProperty('--view-width', W + 'px');
+    style.setProperty('--view-top', (v?.offsetTop || 0) + 'px'); style.setProperty('--view-left', (v?.offsetLeft || 0) + 'px');
+    requestAnimationFrame(measureChrome);
+  }
+}
+addEventListener('resize', resize); addEventListener('orientationchange', () => requestAnimationFrame(resize));
+window.visualViewport?.addEventListener('resize', resize);
+window.visualViewport?.addEventListener('scroll', resize);
+resize();
 const cam = { s: 1, x: 0, y: 0, ts: 1, tx: 0, ty: 0, user: false };
 const toScreen = (x, y) => [W / 2 + (x - cam.x) * cam.s, H / 2 + (y - cam.y) * cam.s];
 const toWorld = (sx, sy) => [(sx - W / 2) / cam.s + cam.x, (sy - H / 2) / cam.s + cam.y];
+
+// One set of panels and controls: their data remains identical in both layouts.
+const panelIds = ['stats', 'lb', 'tick'], tabIds = ['tabStats', 'tabHolders', 'tabEvents'];
+let sheetOpen = false, activeTab = 0, menuOpen = false;
+const legendHome = document.createComment('legend home');
+$('legend').before(legendHome);
+const mobileInsets = { left: 20, right: 20, top: 76, bottom: 76 };
+function measureChrome() {
+  if (!mobile) return;
+  const canvasBox = cv.getBoundingClientRect(), top = $('top').getBoundingClientRect(), sheet = $('sheet').getBoundingClientRect();
+  document.documentElement.style.setProperty('--sheet-height', sheet.height + 'px');
+  mobileInsets.left = top.left - canvasBox.left + 12; mobileInsets.right = canvasBox.right - top.right + 12;
+  mobileInsets.top = top.bottom - canvasBox.top + 20; mobileInsets.bottom = canvasBox.bottom - sheet.top + 12;
+}
+function updateReplayLabel() {
+  $('btnReplay').textContent = mode === 'replay' ? (mobile ? '■ Stop' : '■ Stop replay') : (mobile ? '▶ Replay' : '▶ Replay from launch');
+}
+function setMenu(open, restoreFocus = false) {
+  menuOpen = mobile && open;
+  $('controls').classList.toggle('open', menuOpen);
+  $('btnMenu').setAttribute('aria-expanded', String(menuOpen));
+  if (menuOpen) { selectedId = null; setSheet(false); }
+  if (restoreFocus) $('btnMenu').focus();
+}
+function setSheet(open, focusTab = false) {
+  sheetOpen = mobile && open;
+  $('sheet').classList.toggle('expanded', sheetOpen);
+  $('sheetToggle').setAttribute('aria-expanded', String(sheetOpen));
+  $('sheetToggle').setAttribute('aria-label', (sheetOpen ? 'Collapse' : 'Expand') + ' Stats, Holders and Events');
+  $('sheetChevron').textContent = sheetOpen ? '⌄' : '⌃';
+  $('sheetBody').hidden = mobile && !sheetOpen;
+  if (sheetOpen) { selectedId = null; setMenu(false); }
+  panelIds.forEach((id, i) => {
+    $(id).hidden = mobile && i !== activeTab;
+    if (mobile) { $(id).setAttribute('role', 'tabpanel'); $(id).setAttribute('aria-labelledby', tabIds[i]); $(id).tabIndex = 0; }
+    else { $(id).removeAttribute('role'); $(id).removeAttribute('aria-labelledby'); $(id).removeAttribute('tabindex'); }
+  });
+  if (focusTab && sheetOpen) $(tabIds[activeTab]).focus();
+  measureChrome();
+}
+function selectTab(i) {
+  activeTab = i;
+  tabIds.forEach((id, j) => { $(id).setAttribute('aria-selected', String(i === j)); $(id).tabIndex = i === j ? 0 : -1; });
+  $('sheetPanels').scrollTop = 0;
+  setSheet(true);
+}
+function applyResponsiveLayout() {
+  mobile = mobileQuery.matches;
+  if (mobile) $('stats').append($('legend')); else legendHome.after($('legend'));
+  selectedId = null; $('tip').style.display = 'none';
+  setMenu(false); setSheet(false); updateReplayLabel(); resize(); measureChrome(); renderHud();
+}
+$('btnMenu').addEventListener('click', () => setMenu(!menuOpen));
+$('sheetToggle').addEventListener('click', () => setSheet(!sheetOpen));
+tabIds.forEach((id, i) => {
+  $(id).addEventListener('click', () => selectTab(i));
+  $(id).addEventListener('keydown', (e) => {
+    const next = e.key === 'ArrowRight' ? (i + 1) % 3 : e.key === 'ArrowLeft' ? (i + 2) % 3 : e.key === 'Home' ? 0 : e.key === 'End' ? 2 : -1;
+    if (next < 0) return; e.preventDefault(); selectTab(next); $(tabIds[next]).focus();
+  });
+});
+document.addEventListener('keydown', (e) => {
+  if (!mobile || e.key !== 'Escape') return;
+  if (menuOpen) setMenu(false, true);
+  else if (selectedId !== null) { selectedId = null; cv.focus(); }
+  else if (sheetOpen) { setSheet(false); $('sheetToggle').focus(); }
+});
+document.addEventListener('pointerdown', (e) => { if (mobile && menuOpen && e.target instanceof Node && !$('top').contains(e.target)) setMenu(false); });
+new ResizeObserver(measureChrome).observe($('sheet'));
+new ResizeObserver(measureChrome).observe($('top'));
+mobileQuery.addEventListener('change', applyResponsiveLayout);
+applyResponsiveLayout();
 
 // glow sprites
 const spriteCache = new Map();
@@ -118,7 +208,7 @@ function glowSprite(c, size = 128) {
   gr.addColorStop(0, rgba(c, 1)); gr.addColorStop(0.12, rgba(c, 0.85)); gr.addColorStop(0.3, rgba(c, 0.32)); gr.addColorStop(0.6, rgba(c, 0.08)); gr.addColorStop(1, rgba(c, 0));
   g.fillStyle = gr; g.fillRect(0, 0, size, size); spriteCache.set(k, s); return s;
 }
-function glow(x, y, r, c, a = 1) { ctx.globalAlpha = a; const s = glowSprite(c); ctx.drawImage(s, x - r, y - r, r * 2, r * 2); ctx.globalAlpha = 1; }
+function glow(x, y, r, c, a = 1) { ctx.globalAlpha = a; const s = glowSprite(c, mobile ? 64 : 128); ctx.drawImage(s, x - r, y - r, r * 2, r * 2); ctx.globalAlpha = 1; }
 
 // background stars
 const stars = Array.from({ length: 260 }, () => ({ x: Math.random(), y: Math.random(), z: Math.random() * 0.8 + 0.2, p: Math.random() * 6.28 }));
@@ -168,7 +258,7 @@ function stepLayout(dt) {
     if (dc < minC) { fx += (h.x / dc) * (minC - dc) * 14; fy += (h.y / dc) * (minC - dc) * 14; }
     h.vx = (h.vx + fx * dt) * 0.82; h.vy = (h.vy + fy * dt) * 0.82;
     h.x += h.vx * dt * 3; h.y += h.vy * dt * 3;
-    h.rot += h.spin * dt;
+    if (!(mobile && motionQuery.matches)) h.rot += h.spin * dt;
   }
   // nodes: golden-angle phyllotaxis around their hub, slowly spinning
   const GA = 2.399963;
@@ -185,8 +275,8 @@ function fitCamera(dt) {
   if (cam.user) return;
   let minX = -120, maxX = 120, minY = -120, maxY = 120;
   for (const h of hubs.values()) { const r = clusterR(h) + 30; minX = Math.min(minX, h.x - r); maxX = Math.max(maxX, h.x + r); minY = Math.min(minY, h.y - r); maxY = Math.max(maxY, h.y + r); }
-  const padL = W > 900 ? 270 : 20, padR = W > 900 ? 310 : 20, padT = 70, padB = 60;
-  const availW = Math.max(200, W - padL - padR), availH = Math.max(200, H - padT - padB);
+  const padL = mobile ? mobileInsets.left : W > 900 ? 270 : 20, padR = mobile ? mobileInsets.right : W > 900 ? 310 : 20, padT = mobile ? mobileInsets.top : 70, padB = mobile ? mobileInsets.bottom : 60;
+  const availW = Math.max(mobile ? 60 : 200, W - padL - padR), availH = Math.max(mobile ? 60 : 200, H - padT - padB);
   const s = Math.min(availW / (maxX - minX), availH / (maxY - minY), 1.5);
   const offX = (padL - padR) / 2 / s, offY = (padT - padB) / 2 / s;
   cam.ts = s; cam.tx = (minX + maxX) / 2 - offX; cam.ty = (minY + maxY) / 2 - offY;
@@ -215,7 +305,7 @@ function exitNode(id) {
 }
 
 // ---------- particles / pulses ----------
-const portal = () => toWorld(W - (W > 900 ? 330 : 50), H * 0.5);
+const portal = () => toWorld(W - (!mobile && W > 900 ? 330 : 50), H * 0.5);
 function addFloat(f) { floats.push(f); while (floats.length > 4) floats.shift(); }
 function corePulse(ethAmt, buy) {
   const c = buy ? COL.eth : COL.sell;
@@ -224,6 +314,7 @@ function corePulse(ethAmt, buy) {
   addFloat({ x: 0, y: -46, t: 0, dur: 2.6, txt: `${buy ? '▲ BUY' : '▼ SELL'} ${ethAmt.toFixed(ethAmt < 0.01 ? 4 : 3)} ETH`, c });
 }
 function streamToNodes(ethAmt) {
+  if (mobile && motionQuery.matches) return;
   const list = [...nodes.values()].filter((n) => !n.exiting);
   if (!list.length) return;
   const totalW = list.reduce((s, n) => s + WEIGHT[n.level], 0) || 1;
@@ -231,7 +322,7 @@ function streamToNodes(ethAmt) {
   if (parts.length > (mode === 'replay' ? 500 : 1600)) return;
   // weighted pick by node weight
   const cum = []; let acc = 0; for (const n of list) { acc += WEIGHT[n.level] / totalW; cum.push(acc); }
-  for (let i = 0; i < N && parts.length < 2200; i++) {
+  for (let i = 0; i < (mobile ? Math.min(N, 32) : N) && parts.length < (mobile ? 120 : 2200); i++) {
     const u = Math.random(); let j = cum.findIndex((c) => c >= u); if (j < 0) j = list.length - 1;
     const tgt = list[j], a = Math.random() * 6.283, r0 = 62;
     parts.push({ sx: Math.cos(a) * r0, sy: Math.sin(a) * r0, tgt, t: -Math.random() * 0.9, dur: 0.9 + Math.random() * 0.7, bend: (Math.random() - 0.5) * 0.9, c: tgt.owner === HL ? COL.gold : COL.eth, size: 9 + Math.random() * 6 });
@@ -240,8 +331,9 @@ function streamToNodes(ethAmt) {
 }
 // inbound sparks from the screen edge into the core on a buy
 function inbound(ethAmt) {
+  if (mobile && motionQuery.matches) return;
   if (parts.length > (mode === 'replay' ? 500 : 1600)) return;
-  const n = Math.min(mode === 'replay' ? 16 : 40, 6 + Math.round(ethAmt * 60));
+  const n = Math.min(mobile ? Math.min(10, 120 - parts.length) : mode === 'replay' ? 16 : 40, 6 + Math.round(ethAmt * 60));
   const R = Math.max(W, H) / cam.s * 0.7;
   for (let i = 0; i < n; i++) { const a = Math.random() * 6.283; parts.push({ sx: Math.cos(a) * R, sy: Math.sin(a) * R, tx: 0, ty: 0, t: -Math.random() * 0.4, dur: 0.6 + Math.random() * 0.35, bend: (Math.random() - 0.5) * 0.5, c: COL.core, size: 8 + Math.random() * 5, inb: true }); }
 }
@@ -357,6 +449,9 @@ function renderHud() {
   if (G.tw == null) return;
   const tw = Number(G.tw), active = G.apl.reduce((a, b) => a + b, 0);
   const back = G.sumPend + G.backlog;
+  $('mActive').textContent = active.toLocaleString('en-US') + (nodes.size !== active && mode === 'live' ? ' · syncing' : '');
+  $('mWeight').textContent = tw.toLocaleString('en-US');
+  $('mBack').textContent = fE(back, 4);
   $('hActive').innerHTML = `${active} <small>${nodes.size !== active && mode === 'live' ? '(syncing)' : ''}</small>`;
   $('hLevels').innerHTML = `<span class="l1">${G.apl[0]}</span> / <span class="l2">${G.apl[1]}</span> / <span class="l3">${G.apl[2]}</span>`;
   $('hWeight').textContent = tw.toLocaleString('en-US');
@@ -369,14 +464,17 @@ function renderHud() {
   const mine = HL ? [...nodes.values()].filter((n) => !n.exiting && n.owner === HL) : [];
   const mw = mine.reduce((s, n) => s + WEIGHT[n.level], 0), mp = mine.reduce((s, n) => s + n.pending, 0);
   $('hHlAddr').innerHTML = HL ? `<a target="_blank" href="https://etherscan.io/address/${HL}">${short(HL)}</a>` : '';
-  if (!HL) $('hMe').innerHTML = '<small>none. Type a wallet in the box at the top, click a holder, or open with ?addr=0x…</small>'; else $('hMe').innerHTML = mine.length ? `w${mw} · ${tw ? (mw / tw * 100).toFixed(1) : 0}% <small>${mine.length} Pepes<br>${mp.toFixed(4)} ETH pending + ${(nE(G.backlog) * mw / (tw || 1)).toFixed(4)} backlog share</small>` : '<small>no active Pepes</small>';
+  if (!HL) $('hMe').innerHTML = mobile ? '<small>None. Use Highlight wallet in Menu or select a holder.</small>' : '<small>none. Type a wallet in the box at the top, click a holder, or open with ?addr=0x…</small>'; else $('hMe').innerHTML = mine.length ? `w${mw} · ${tw ? (mw / tw * 100).toFixed(1) : 0}% <small>${mine.length} Pepes<br>${mp.toFixed(4)} ETH pending + ${(nE(G.backlog) * mw / (tw || 1)).toFixed(4)} backlog share</small>` : '<small>no active Pepes</small>';
   // leaderboard
   const hs = [...hubs.values()].filter((h) => h.n).sort((a, b) => b.w - a.w).slice(0, 10);
   const maxW = hs[0]?.w || 1;
-  $('lbList').innerHTML = hs.map((h, i) => `<div class="lbr ${h.addr === HL ? 'me' : ''}" data-addr="${h.addr}"><span style="color:var(--mut)">${i + 1}</span><span>${h.addr === HL ? '<b class="gold">' + short(h.addr) + '</b>' : short(h.addr)}</span><span style="color:var(--mut);text-align:right">${h.n}🐸</span><span style="text-align:right">${tw ? (h.w / tw * 100).toFixed(1) : 0}%</span><div class="bar"><i style="width:${(h.w / maxW * 100).toFixed(1)}%"></i></div></div>`).join('') || '<div style="color:var(--mut)">No Pepes active yet.</div>';
+  const focusedHolder = document.activeElement?.closest('.lbr')?.getAttribute('data-addr');
+  $('lbList').innerHTML = hs.map((h, i) => `<div class="lbr ${h.addr === HL ? 'me' : ''}" role="button" tabindex="0" aria-pressed="${h.addr === HL}" aria-label="Highlight wallet ${h.addr}, ${h.n} Pepes" data-addr="${h.addr}"><span style="color:var(--mut)">${i + 1}</span><span>${h.addr === HL ? '<b class="gold">' + short(h.addr) + '</b>' : short(h.addr)}</span><span style="color:var(--mut);text-align:right">${h.n}🐸</span><span style="text-align:right">${tw ? (h.w / tw * 100).toFixed(1) : 0}%</span><div class="bar"><i style="width:${(h.w / maxW * 100).toFixed(1)}%"></i></div></div>`).join('') || '<div style="color:var(--mut)">No Pepes active yet.</div>';
+  if (focusedHolder) /** @type {HTMLElement} */ ($('lbList').querySelector(`[data-addr="${focusedHolder}"]`))?.focus({ preventScroll: true });
   $('blk').textContent = head ? `block ${head.toLocaleString('en-US')}` : '';
 }
-$('lbList').addEventListener('click', (e) => { const r = e.target.closest('.lbr'); if (r) { HL = r.dataset.addr; lsSet('swarmHL', HL); $('hlAddr').value = HL; renderHud(); } });
+$('lbList').addEventListener('click', (e) => { const r = e.target instanceof Element ? e.target.closest('.lbr') : null; if (r instanceof HTMLElement) { HL = r.dataset.addr; lsSet('swarmHL', HL); $('hlAddr').value = HL; $('walletError').hidden = true; $('hlAddr').setAttribute('aria-invalid', 'false'); renderHud(); } });
+$('lbList').addEventListener('keydown', (e) => { const r = e.target instanceof Element ? e.target.closest('.lbr') : null; if ((e.key === 'Enter' || e.key === ' ') && r instanceof HTMLElement) { e.preventDefault(); r.click(); } });
 setInterval(() => { // countdown
   if (!G.streamEnd) { $('hCount').innerHTML = '<small>no stream running</small>'; return; }
   const now = G.ts + (Date.now() - G.tsAt) / 1000; let s = Math.max(0, Math.floor(G.streamEnd - now));
@@ -385,16 +483,17 @@ setInterval(() => { // countdown
 }, 1000);
 
 // ---------- render loop ----------
-let coreFlash = 0, last = performance.now(), T = 0, fps = 60;
+let coreFlash = 0, last = performance.now(), T = 0, fps = 60, tipNode = null, tipUpdated = 0;
 function frame(now) {
-  const dt = Math.min(0.05, (now - last) / 1000); last = now; T += dt; fps = fps * 0.95 + (1 / Math.max(dt, 1e-3)) * 0.05;
+  const dt = Math.min(0.05, (now - last) / 1000); last = now; if (!(mobile && motionQuery.matches)) T += dt; fps = fps * 0.95 + (1 / Math.max(dt, 1e-3)) * 0.05;
+  if (mobile) { parts.length = Math.min(parts.length, motionQuery.matches ? 0 : 120); rings.length = Math.min(rings.length, motionQuery.matches ? 0 : 24); if (motionQuery.matches) floats.length = 0; }
   stepLayout(dt); fitCamera(dt);
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
   // background
   const bg = ctx.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, Math.max(W, H) * 0.75);
   bg.addColorStop(0, '#0a0f24'); bg.addColorStop(0.55, '#05070f'); bg.addColorStop(1, '#020208');
   ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
-  for (const s of stars) { const a = 0.25 + 0.35 * Math.sin(T * 0.8 + s.p) * s.z; ctx.fillStyle = `rgba(170,200,255,${Math.max(0, a) * s.z})`; const px = ((s.x * W - cam.x * cam.s * 0.05 * s.z) % W + W) % W, py = ((s.y * H - cam.y * cam.s * 0.05 * s.z) % H + H) % H; ctx.fillRect(px, py, s.z * 1.6, s.z * 1.6); }
+  for (let i = 0; i < (mobile ? 80 : stars.length); i++) { const s = stars[i]; const a = 0.25 + 0.35 * Math.sin(T * 0.8 + s.p) * s.z; ctx.fillStyle = `rgba(170,200,255,${Math.max(0, a) * s.z})`; const px = ((s.x * W - cam.x * cam.s * 0.05 * s.z) % W + W) % W, py = ((s.y * H - cam.y * cam.s * 0.05 * s.z) % H + H) % H; ctx.fillRect(px, py, s.z * 1.6, s.z * 1.6); }
   ctx.globalCompositeOperation = 'lighter';
   const s = cam.s;
   // hub links
@@ -434,18 +533,20 @@ function frame(now) {
       if (k >= 1) { nodes.delete(n.id); portalFlash = 1; continue; }
     }
     const [x, y] = toScreen(n.x, n.y); const r = Math.max(1.2, n.r * s);
+    // Cull drawing only; every node still participates in state and layout.
+    if (mobile && (x < -r * 4 || x > W + r * 4 || y < -r * 4 || y > H + r * 4)) continue;
     const c = COL[n.level] || COL[1]; const me = n.owner === HL;
     const bright = 0.45 + 0.55 * Math.min(1, Math.sqrt(n.pending / pendMax));
-    glow(x, y, r * (3.4 + n.flash * 3 + n.hit * 1.2), c, Math.min(1, bright * 0.75 + n.flash * 0.6 + n.hit * 0.3));
+    glow(x, y, r * (mobile ? 2.4 + n.flash + n.hit : 3.4 + n.flash * 3 + n.hit * 1.2), c, Math.min(1, bright * 0.75 + n.flash * 0.6 + n.hit * 0.3));
     if (me) glow(x, y, r * 2.3, COL.gold, 0.35 + 0.15 * Math.sin(T * 3 + n.id));
     const im = imgCache.get(n.id);
     ctx.globalCompositeOperation = 'source-over';
-    if (im?.sprite && r >= 5) {
+    if (im?.sprite && r >= (mobile ? 10 : 5)) {
       ctx.drawImage(im.sprite, x - r, y - r, r * 2, r * 2);
       ctx.strokeStyle = rgba(me ? COL.gold : c, 0.9); ctx.lineWidth = Math.max(1, r * 0.16); ctx.beginPath(); ctx.arc(x, y, r, 0, 6.283); ctx.stroke();
     } else { ctx.fillStyle = rgba(c, 0.95); ctx.beginPath(); ctx.arc(x, y, r * 0.8, 0, 6.283); ctx.fill(); ctx.fillStyle = 'rgba(255,255,255,0.85)'; ctx.beginPath(); ctx.arc(x, y, r * 0.35, 0, 6.283); ctx.fill(); }
     ctx.globalCompositeOperation = 'lighter';
-    if (!dragging && Math.hypot(mx - x, my - y) < r + 4) hover = n;
+    if (!mobile && !dragging && Math.hypot(mx - x, my - y) < r + 4) hover = n;
   }
   // rings
   for (let i = rings.length - 1; i >= 0; i--) {
@@ -462,49 +563,62 @@ function frame(now) {
     const mxw = (p.sx + tx) / 2 - (ty - p.sy) * p.bend, myw = (p.sy + ty) / 2 + (tx - p.sx) * p.bend;
     const wx = (1 - e) ** 2 * p.sx + 2 * (1 - e) * e * mxw + e * e * tx, wy = (1 - e) ** 2 * p.sy + 2 * (1 - e) * e * myw + e * e * ty;
     const [x, y] = toScreen(wx, wy);
-    if (p.px != null) { ctx.strokeStyle = rgba(p.c, 0.55 * (1 - k * 0.5)); ctx.lineWidth = Math.max(1.2, 2.2 * Math.min(1.4, s)); ctx.beginPath(); ctx.moveTo(p.px, p.py); ctx.lineTo(x, y); ctx.stroke(); }
+    if (p.px != null) { ctx.strokeStyle = rgba(p.c, 0.55 * (1 - k * 0.5)); ctx.lineWidth = Math.max(1.2, 2.2 * Math.min(1.4, s)); ctx.beginPath(); const length = Math.hypot(x - p.px, y - p.py), f = mobile && length > 18 ? 18 / length : 1; ctx.moveTo(x + (p.px - x) * f, y + (p.py - y) * f); ctx.lineTo(x, y); ctx.stroke(); }
     p.px = x; p.py = y;
     glow(x, y, p.size * Math.min(1.25, Math.max(1, s)) * (1 - k * 0.35), p.c, parts.length > 500 ? 0.7 : 1);
     ctx.fillStyle = 'rgba(255,255,255,0.9)'; ctx.fillRect(x - 1, y - 1, 2, 2);
   }
   // labels: hubs
   ctx.globalCompositeOperation = 'source-over';
-  ctx.textAlign = 'center'; ctx.font = '600 11px ui-monospace,Consolas,monospace';
+  ctx.textAlign = 'center'; ctx.font = `600 ${mobile ? 12 : 11}px ui-monospace,Consolas,monospace`;
   for (const h of hubs.values()) {
+    if (mobile && s < 1.1) continue; // Wallet labels become readable after zooming in.
     if (h.alpha < 0.05) continue; const me = h.addr === HL; if (!me && h.n < 3 && s < 1.1) continue; const [hx, hy] = toScreen(h.x, h.y);
     const ly = hy + (clusterR(h) + 14) * s;
     ctx.globalAlpha = h.alpha * (me ? 1 : 0.75);
     ctx.fillStyle = me ? '#ffd166' : '#9fb4e0'; ctx.fillText(me ? `★ ${short(h.addr)} · ${h.n} · w${h.w}` : `${short(h.addr)} · ${h.n} · w${h.w}`, hx, ly);
     ctx.globalAlpha = 1;
   }
-  ctx.font = '700 10px system-ui'; ctx.fillStyle = 'rgba(255,240,210,0.9)'; ctx.fillText('OG POOL', cx, cy + 3);
-  ctx.fillStyle = 'rgba(150,220,255,0.55)'; ctx.font = '600 9px system-ui'; ctx.fillText('DISTRIBUTOR', cx, cy - 66 * s - 4);
+  ctx.font = `700 ${mobile ? 12 : 10}px system-ui`; ctx.fillStyle = 'rgba(255,240,210,0.9)'; ctx.fillText('OG POOL', cx, cy + 3);
+  ctx.fillStyle = 'rgba(150,220,255,0.55)'; ctx.font = `600 ${mobile ? 12 : 9}px system-ui`; ctx.fillText('DISTRIBUTOR', cx, cy - 66 * s - 4);
   ctx.fillStyle = 'rgba(255,209,102,0.75)'; ctx.fillText('AUCTION', px, py + 58);
   // floats
   ctx.font = '700 13px ui-monospace,Consolas,monospace';
   for (let i = floats.length - 1; i >= 0; i--) {
     const f = floats[i]; f.t += dt; const k = f.t / f.dur; if (k >= 1) { floats.splice(i, 1); continue; }
-    const [x, y] = toScreen(f.x, f.y); ctx.globalAlpha = 1 - k * k; ctx.fillStyle = rgba(f.c, 1); ctx.shadowColor = rgba(f.c, 0.8); ctx.shadowBlur = 10;
-    ctx.font = f.small ? '600 11px ui-monospace,Consolas,monospace' : '700 13px ui-monospace,Consolas,monospace';
+    if (mobile && s < 0.8) continue; // Full event details remain in the Events tab.
+    const [x, y] = toScreen(f.x, f.y); ctx.globalAlpha = 1 - k * k; ctx.fillStyle = rgba(f.c, 1); ctx.shadowColor = rgba(f.c, 0.8); ctx.shadowBlur = mobile ? 0 : 10;
+    ctx.font = f.small ? `600 ${mobile ? 12 : 11}px ui-monospace,Consolas,monospace` : '700 13px ui-monospace,Consolas,monospace';
     ctx.fillText(f.txt, x, y - k * 34 * (f.y < 0 ? 1 : -1)); ctx.shadowBlur = 0; ctx.globalAlpha = 1;
   }
   // tooltip
   const tip = $('tip');
+  if (mobile) { hover = nodes.get(selectedId); if (hover?.exiting) { selectedId = null; hover = null; } }
   if (hover) {
-    const n = hover, im = imgCache.get(n.id), now = G.ts ? G.ts + (Date.now() - G.tsAt) / 1000 : Date.now() / 1000, unl = n.last ? n.last + EXIT_LOCK : 0;
+    if (!mobile || tipNode !== hover || now - tipUpdated > 250) {
+    tipNode = hover; tipUpdated = now;
+    const n = hover, im = imgCache.get(n.id), chainNow = G.ts ? G.ts + (Date.now() - G.tsAt) / 1000 : Date.now() / 1000, unl = n.last ? n.last + EXIT_LOCK : 0;
     const attrs = esc((meta.get(n.id) || []).map((a) => a?.value ?? '').join(' · '));
-    tip.innerHTML = `${im?.url ? `<img src="${esc(im.url)}">` : ''}<b style="font-size:14px">Swarm Pepe #${n.id}</b><br>
+    const content = `${im?.url ? `<img alt="" src="${esc(im.url)}">` : ''}<b style="font-size:14px">Swarm Pepe #${n.id}</b><br>
       <span class="l${n.level}">L${n.level}</span> · weight ${WEIGHT[n.level]}<br>
       owner ${n.owner === HL ? '<b class="gold">' + short(n.owner) + '</b>' : short(n.owner)}<br>
       pending <b>${n.pending.toFixed(6)}</b> ETH${G.usd ? ` <span style="color:var(--mut)">${fmtUsd(n.pending * G.usd)}</span>` : ''}<br>
       + backlog share ${G.tw ? (nE(G.backlog) * WEIGHT[n.level] / Number(G.tw)).toFixed(6) : '–'}<br>
-      exit ${unl ? (unl > now ? 'unlocks ' + tsLocal(unl) : '<span class="l1">unlocked</span>') : '–'}
-      ${attrs ? `<div style="color:var(--mut);font-size:11px;margin-top:4px;clear:both">${attrs}</div>` : ''}`;
+      exit ${unl ? (unl > chainNow ? 'unlocks ' + tsLocal(unl) : '<span class="l1">unlocked</span>') : '–'}
+      ${attrs ? `<div class="traits" style="color:var(--mut);font-size:11px;margin-top:4px;clear:both">${attrs}</div>` : ''}`;
+    if (mobile) {
+      if (!tip.querySelector('#tipContent')) tip.innerHTML = '<button id="tipClose" aria-label="Close Pepe details">×</button><div id="tipContent"></div>';
+      $('tipContent').innerHTML = content;
+    } else tip.innerHTML = content;
+    }
     tip.style.display = 'block';
+    if (mobile) { tip.style.removeProperty('left'); tip.style.removeProperty('top'); }
+    else {
     const tw2 = tip.offsetWidth, th = tip.offsetHeight;
     tip.style.left = Math.min(W - tw2 - 10, mx + 16) + 'px'; tip.style.top = Math.min(H - th - 10, my + 16) + 'px';
     cv.style.cursor = 'pointer';
-  } else { tip.style.display = 'none'; cv.style.cursor = ''; }
+    }
+  } else { tip.style.display = 'none'; cv.style.cursor = ''; tipNode = null; }
   requestAnimationFrame(frame);
 }
 let portalFlash = 0;
@@ -512,21 +626,87 @@ let portalFlash = 0;
 // ---------- input (zoom / pan) ----------
 let mouse = [-999, -999], dragging = false, dragStart = null;
 cv.addEventListener('mousemove', (e) => {
+  if (mobile) return;
   mouse = [e.clientX, e.clientY];
   if (dragStart) { const dx = e.clientX - dragStart[0], dy = e.clientY - dragStart[1]; if (Math.hypot(dx, dy) > 3) { dragging = true; cam.user = true; cv.classList.add('drag'); } if (dragging) { cam.x = dragStart[2] - dx / cam.s; cam.y = dragStart[3] - dy / cam.s; } }
 });
 cv.addEventListener('mouseleave', () => { mouse = [-999, -999]; });
-cv.addEventListener('mousedown', (e) => { dragStart = [e.clientX, e.clientY, cam.x, cam.y]; });
+cv.addEventListener('mousedown', (e) => { if (!mobile) dragStart = [e.clientX, e.clientY, cam.x, cam.y]; });
 addEventListener('mouseup', () => { dragStart = null; dragging = false; cv.classList.remove('drag'); });
 cv.addEventListener('wheel', (e) => {
   e.preventDefault(); cam.user = true;
   const [wx, wy] = toWorld(e.clientX, e.clientY); const f = Math.exp(-e.deltaY * 0.0015);
   cam.s = Math.min(8, Math.max(0.15, cam.s * f)); const [wx2, wy2] = toWorld(e.clientX, e.clientY); cam.x += wx - wx2; cam.y += wy - wy2;
 }, { passive: false });
-const fit = () => { cam.user = false; };
-cv.addEventListener('dblclick', fit); $('btnFit').onclick = fit;
+const fit = () => { cam.user = false; selectedId = null; };
+cv.addEventListener('dblclick', () => { if (!mobile) fit(); });
+$('btnFit').onclick = () => { fit(); if (mobile) setMenu(false, true); };
+
+// Pointer capture keeps drags continuous; a pinch anchors the world under its midpoint.
+const pointers = new Map();
+let gesture = null, lastTap = null;
+const canvasPoint = (e) => { const r = cv.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+function startGesture(tappable = false) {
+  const p = [...pointers.values()];
+  if (!p.length) { gesture = null; dragging = false; cv.classList.remove('drag'); return; }
+  const mid = p.length > 1 ? [(p[0][0] + p[1][0]) / 2, (p[0][1] + p[1][1]) / 2] : p[0];
+  gesture = { mid, world: toWorld(...mid), scale: cam.s, distance: p.length > 1 ? Math.max(1, Math.hypot(p[0][0] - p[1][0], p[0][1] - p[1][1])) : 0, tap: tappable && p.length === 1, at: performance.now() };
+  if (p.length > 1) { gesture.tap = false; lastTap = null; selectedId = null; cam.user = true; }
+}
+cv.addEventListener('pointerdown', (e) => {
+  if (!mobile || e.button !== 0) return;
+  e.preventDefault(); cv.setPointerCapture(e.pointerId);
+  pointers.set(e.pointerId, canvasPoint(e)); startGesture(pointers.size === 1);
+});
+cv.addEventListener('pointermove', (e) => {
+  if (!mobile || !pointers.has(e.pointerId) || !gesture) return;
+  pointers.set(e.pointerId, canvasPoint(e));
+  const p = [...pointers.values()], two = p.length > 1;
+  const mid = two ? [(p[0][0] + p[1][0]) / 2, (p[0][1] + p[1][1]) / 2] : p[0];
+  if (two || Math.hypot(mid[0] - gesture.mid[0], mid[1] - gesture.mid[1]) > 6) gesture.tap = false;
+  if (gesture.tap) return;
+  selectedId = null; lastTap = null; dragging = true; cam.user = true; cv.classList.add('drag');
+  if (two) cam.s = Math.min(8, Math.max(0.15, gesture.scale * Math.hypot(p[0][0] - p[1][0], p[0][1] - p[1][1]) / gesture.distance));
+  cam.x = gesture.world[0] - (mid[0] - W / 2) / cam.s; cam.y = gesture.world[1] - (mid[1] - H / 2) / cam.s;
+});
+function tapNode(point) {
+  let nearest = null, distance = Infinity;
+  for (const n of nodes.values()) {
+    if (n.exiting) continue;
+    const [x, y] = toScreen(n.x, n.y), d = Math.hypot(x - point[0], y - point[1]);
+    if (d <= Math.max(22, n.r * cam.s + 4) && d < distance) { nearest = n; distance = d; }
+  }
+  selectedId = nearest?.id ?? null;
+  if (nearest) { setSheet(false); setMenu(false); }
+}
+function endPointer(e) {
+  if (!pointers.has(e.pointerId)) return;
+  const point = canvasPoint(e), now = performance.now();
+  if (e.type === 'pointerup' && gesture?.tap && now - gesture.at < 500) {
+    if (lastTap && now - lastTap.at < 300 && Math.hypot(point[0] - lastTap.point[0], point[1] - lastTap.point[1]) < 28) { fit(); lastTap = null; }
+    else { tapNode(point); lastTap = { at: now, point }; }
+  }
+  pointers.delete(e.pointerId); startGesture(false);
+}
+cv.addEventListener('pointerup', endPointer);
+cv.addEventListener('pointercancel', endPointer);
+cv.addEventListener('lostpointercapture', endPointer);
+function resetPointers() { pointers.clear(); gesture = null; lastTap = null; dragStart = null; dragging = false; cv.classList.remove('drag'); }
+addEventListener('blur', resetPointers); addEventListener('resize', resetPointers); mobileQuery.addEventListener('change', resetPointers);
+$('tip').addEventListener('click', (e) => { if (e.target instanceof Element && e.target.closest('#tipClose')) { selectedId = null; cv.focus(); } });
+cv.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' || e.key === '0') { e.preventDefault(); fit(); return; }
+  const pan = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key];
+  if (pan) { e.preventDefault(); cam.user = true; cam.x += pan[0] * 40 / cam.s; cam.y += pan[1] * 40 / cam.s; }
+  if (['+', '=', '-'].includes(e.key)) { e.preventDefault(); cam.user = true; cam.s = Math.min(8, Math.max(0.15, cam.s * (e.key === '-' ? 0.8 : 1.25))); }
+  if (mobile && e.key.toLowerCase() === 'n') {
+    e.preventDefault(); const ids = [...nodes.values()].filter((n) => !n.exiting).map((n) => n.id);
+    selectedId = ids[(ids.indexOf(selectedId) + 1) % ids.length] ?? null;
+    setSheet(false); setMenu(false);
+  }
+});
 if (HL) $('hlAddr').value = HL;
-$('hlAddr').addEventListener('change', (e) => { const v = e.target.value.trim(); if (!v) { HL = ''; lsSet('swarmHL', ''); renderHud(); } else if (ethers.isAddress(v)) { HL = v.toLowerCase(); lsSet('swarmHL', HL); renderHud(); } });
+$('hlAddr').addEventListener('change', () => { const v = $('hlAddr').value.trim(); const invalid = !!v && !ethers.isAddress(v); $('hlAddr').setAttribute('aria-invalid', String(invalid)); $('walletError').hidden = !invalid; $('walletError').textContent = invalid ? 'Enter a valid Ethereum wallet address, or clear the field.' : ''; if (!v) { HL = ''; lsSet('swarmHL', ''); renderHud(); } else if (!invalid) { HL = v.toLowerCase(); lsSet('swarmHL', HL); renderHud(); } });
 
 // ---------- live loop ----------
 let liveQueue = [];
@@ -561,11 +741,13 @@ function startReplay() {
   const b0 = DEPLOY_BLOCK, b1 = Math.max(head, events[events.length - 1].block);
   rp_ = { t0: performance.now(), dur, b0, b1, i: 0 };
   $('mode').innerHTML = '<span class="dot rp"></span>REPLAY'; $('btnReplay').textContent = '■ Stop replay'; $('btnReplay').classList.add('on');
+  updateReplayLabel(); selectedId = null;
   $('rpBar').style.display = 'block'; $('rpLbl').style.display = 'block';
 }
 function stopReplay(finished) {
   mode = 'live'; rp_ = null;
   $('mode').innerHTML = '<span class="dot"></span>LIVE'; $('btnReplay').textContent = '▶ Replay from launch'; $('btnReplay').classList.remove('on');
+  updateReplayLabel(); selectedId = null;
   $('rpBar').style.display = 'none'; $('rpLbl').style.display = 'none';
   // rebuild exact current state from the full event list, then resync with the chain
   nodes.clear(); hubs.clear();
@@ -592,7 +774,7 @@ setInterval(() => {
     if (acc.rew > 0) { const r = acc.rew; setTimeout(() => streamToNodes(r), 150); }
     Object.assign(acc, { swaps: 0, buyEth: 0, sellEth: 0, og: 0, last: null, rew: 0, fired: nowMs });
   }
-  $('rpBar').firstElementChild.style.width = (k * 100).toFixed(1) + '%';
+  /** @type {HTMLElement} */ ($('rpBar').firstElementChild).style.width = (k * 100).toFixed(1) + '%';
   $('rpLbl').textContent = `block ${Math.floor(blk).toLocaleString('en-US')} · ${nodes.size} Pepes`;
   if (k >= 1) stopReplay(true);
 }, 120);
@@ -618,6 +800,8 @@ async function boot() {
     mode = mode === 'replay' ? 'replay' : 'live'; firstLoaded = true;
     $('loading').style.display = 'none';
     window.__swarm = { ready: true, nodes: () => [...nodes.values()].filter((n) => !n.exiting).length, G: () => G, events: () => events.length, fps: () => fps,
+      view: () => ({ mobile, width: W, height: H, dpr: DPR, camera: { ...cam }, particles: parts.length, rings: rings.length, selected: selectedId, mode,
+        nodes: [...nodes.values()].filter((n) => !n.exiting).map((n) => ({ id: n.id, screen: toScreen(n.x, n.y), radius: n.r * cam.s })) }),
       demo: () => { const s = [...events].reverse().find((e) => e.type === 'swap' && e.buy); const r = events.find((e) => e.type === 'rew' && e.tx === s?.tx); if (s) { corePulse(s.eth, true); inbound(s.eth); streamToNodes(r ? r.eth : s.eth * 0.025); } } };
     setInterval(poll, POLL_MS);
   } catch (e) { console.error(e); $('loadMsg').textContent = 'failed to load: ' + (e?.message || e); }

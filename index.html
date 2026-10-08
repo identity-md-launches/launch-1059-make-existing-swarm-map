@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>OG · Swarm map</title>
 <style>
   :root { --fg:#e8f1ff; --mut:#7d8aa6; --l1:#39ff9f; --l2:#4cc3ff; --l3:#ff5cf0; --gold:#ffd166; --glass:rgba(10,14,28,.62); --line:rgba(120,160,255,.18); }
@@ -57,25 +57,112 @@
   #rpBar { position:fixed; left:50%; transform:translateX(-50%); top:70px; width:360px; height:4px; border-radius:2px; background:rgba(255,255,255,.08); display:none; overflow:hidden; }
   #rpBar i { display:block; height:100%; width:0; background:linear-gradient(90deg,#4cc3ff,#ff5cf0); box-shadow:0 0 10px #ff5cf0; }
   #rpLbl { position:fixed; left:50%; transform:translateX(-50%); top:78px; font-size:11px; color:var(--mut); letter-spacing:.1em; display:none; }
+  [hidden] { display:none !important; }
+  .mobile-only { display:none; }
+  #controls, #sheet, #sheetBody { display:contents; }
+  canvas#c { touch-action:none; }
+
+  /* The second query keeps the phone controls when a phone rotates. */
+  @media (max-width:767px), (max-width:1023px) and (max-height:500px) {
+    :root { --view-height:100dvh; --view-width:100vw; --view-top:0px; --view-left:0px; --sheet-height:64px; --edge-left:max(8px, env(safe-area-inset-left)); --edge-right:max(8px, env(safe-area-inset-right)); --top-edge:max(8px, env(safe-area-inset-top)); --bottom-edge:max(8px, env(safe-area-inset-bottom)); --mobile-surface:#0a0e1c; }
+    body { height:100dvh; overscroll-behavior:none; }
+    :focus-visible { outline:2px solid var(--l2); outline-offset:3px; }
+    .mobile-only { display:block; }
+    .desktop-only { display:none !important; }
+    canvas#c { inset:auto; top:var(--view-top); left:var(--view-left); width:var(--view-width); height:100dvh; height:var(--view-height); user-select:none; -webkit-user-select:none; }
+    .glass { background:var(--mobile-surface); backdrop-filter:none; -webkit-backdrop-filter:none; box-shadow:0 0 16px rgba(60,120,255,.08); }
+    #top { top:calc(var(--view-top) + var(--top-edge)); left:calc(var(--view-left) + var(--edge-left)); right:auto; width:calc(var(--view-width) - var(--edge-left) - var(--edge-right)); height:52px; padding:0 6px 0 10px; gap:6px; z-index:30; }
+    #top h1 { font-size:12px; letter-spacing:.1em; white-space:nowrap; flex:1; }
+    #top .sp { display:none; }
+    #mode { white-space:nowrap; }
+    .dot { width:6px; height:6px; margin-right:4px; box-shadow:0 0 5px var(--l1); }
+    button, input, select { min-height:44px; min-width:44px; font-size:12px; }
+    input, select { font-size:16px; }
+    #btnReplay { padding:6px 8px; white-space:nowrap; }
+    #btnMenu { padding:6px 8px; }
+    #controls { display:none; position:fixed; top:calc(var(--view-top) + var(--top-edge) + 60px); left:calc(var(--view-left) + var(--edge-left)); width:calc(var(--view-width) - var(--edge-left) - var(--edge-right)); max-height:calc(var(--view-height) - var(--top-edge) - var(--bottom-edge) - var(--sheet-height) - 68px); overflow:auto; overscroll-behavior:contain; padding:12px; border:1px solid var(--line); border-radius:12px; background:var(--mobile-surface); box-shadow:0 8px 24px rgba(0,0,0,.4); }
+    #controls.open { display:grid; grid-template-columns:1fr auto; gap:8px 12px; align-items:center; }
+    #walletLabel, #hlAddr, #walletError, #controls .control-help { grid-column:1 / -1; }
+    #hlAddr { width:100%; min-width:0; }
+    #walletLabel { margin-top:4px; }
+    #walletError { color:var(--gold); margin:0; }
+    #btnFit { grid-column:1 / -1; }
+    .control-help { margin:0; color:var(--mut); line-height:1.5; }
+    #sheet { display:flex; flex-direction:column; position:fixed; top:auto; bottom:calc(100% - var(--view-top) - var(--view-height) + var(--bottom-edge)); left:calc(var(--view-left) + var(--edge-left)); width:calc(var(--view-width) - var(--edge-left) - var(--edge-right)); max-height:calc(var(--view-height) - var(--top-edge) - var(--bottom-edge) - 68px); border:1px solid var(--line); border-radius:12px; background:var(--mobile-surface); z-index:10; overflow:hidden; }
+    #sheetToggle { display:grid; grid-template-columns:1fr 1fr 1.25fr 14px; gap:6px; align-items:center; width:100%; min-height:58px; padding:6px 10px; border:0; border-radius:11px; background:transparent; text-align:left; flex-shrink:0; }
+    #sheetToggle span { min-width:0; }
+    #sheetToggle small { display:block; font-size:12px; color:var(--mut); white-space:nowrap; }
+    #sheetToggle strong { display:block; font-size:13px; font-weight:650; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+    #sheetToggle:focus-visible { outline-offset:-3px; }
+    #sheetChevron { color:var(--l2); font-size:16px; }
+    #sheetBody { display:flex; flex-direction:column; min-height:0; }
+    #sheetTabs { display:grid; grid-template-columns:repeat(3,1fr); gap:4px; padding:0 8px 8px; flex-shrink:0; }
+    #sheetTabs [aria-selected="true"] { background:rgba(76,195,255,.14); border-color:var(--l2); }
+    #sheetPanels { overflow:auto; overscroll-behavior:contain; max-height:min(46dvh,380px); min-height:0; }
+    #sheet.expanded { max-height:min(62dvh,500px); max-height:min(calc(var(--view-height) * .62),500px); }
+    #stats, #lb, #tick { position:static; width:auto; max-height:none; margin:0; padding:8px 14px 14px; border:0; border-radius:0; box-shadow:none; background:transparent; overflow:visible; }
+    .k, .k small, .v small, #lb h3, #tick h3, .ev .t, .tag, #tip small { font-size:12px; }
+    .v { font-size:17px; overflow-wrap:anywhere; }
+    #lb h3, #tick h3 { letter-spacing:.08em; }
+    .lbr { min-height:48px; padding:6px; grid-template-columns:18px minmax(0,1fr) 50px 54px; }
+    #tickList { gap:8px; }
+    .ev { display:flex; flex-wrap:wrap; gap:4px 8px; white-space:normal; overflow:visible; align-items:center; padding:4px 0; border-bottom:1px solid var(--line); animation:none; }
+    .ev a { display:inline-flex; align-items:center; min-height:44px; min-width:44px; overflow-wrap:anywhere; }
+    #hHlAddr a { display:inline-flex; align-items:center; min-height:44px; }
+    #legend { position:static; display:flex; max-width:none; padding:12px 0 0; margin-top:12px; border:0; border-top:1px solid var(--line); border-radius:0; background:transparent; box-shadow:none; gap:8px 14px; }
+    #legend .sw, .tag { box-shadow:none !important; }
+    #tip { left:calc(var(--view-left) + var(--edge-left)); right:auto; width:calc(var(--view-width) - var(--edge-left) - var(--edge-right)); top:auto; bottom:calc(100% - var(--view-top) - var(--view-height) + var(--bottom-edge) + var(--sheet-height) + 8px); min-width:0; max-height:calc(var(--view-height) - var(--top-edge) - var(--bottom-edge) - var(--sheet-height) - 76px); overflow:auto; overscroll-behavior:contain; pointer-events:auto; padding:10px 12px; }
+    #tipContent { padding-right:44px; overflow-wrap:anywhere; }
+    #tip img { width:44px; height:44px; }
+    #tipClose { position:absolute; top:4px; right:4px; border:0; background:transparent; font-size:20px; }
+    #tip .traits { font-size:12px !important; }
+    #rpBar { top:calc(var(--view-top) + var(--top-edge) + 56px); left:calc(var(--view-left) + var(--edge-left)); transform:none; width:calc(var(--view-width) - var(--edge-left) - var(--edge-right)); }
+    #rpLbl { top:calc(var(--view-top) + var(--top-edge) + 64px); left:calc(var(--view-left) + var(--view-width) / 2); white-space:nowrap; font-size:12px; letter-spacing:0; }
+    #loading { padding:80px 20px; text-align:center; font-size:12px; letter-spacing:.06em; overflow-wrap:anywhere; }
+    @media (max-height:500px) { #sheet.expanded { max-height:calc(var(--view-height) * .58); } }
+    @media (prefers-reduced-motion:reduce) { .dot, #loading .ring { animation:none; } }
+  }
 </style>
 </head>
 <body>
-<canvas id="c"></canvas>
+<canvas id="c" tabindex="0" aria-label="Swarm map. Arrow keys pan, plus and minus zoom, Enter fits. On mobile, N selects the next Pepe. On touch, drag to pan, pinch to zoom, double-tap to fit; tap a Pepe for details."></canvas>
 <div id="loading"><div class="ring"></div><div id="loadMsg">connecting to the swarm…</div></div>
 
 <div id="top" class="glass">
   <h1>Swarm map</h1>
-  <a class="tab on" href="./">Swarm map</a>
-  <span style="font-size:11px;color:var(--mut)">read-only · OG launch #1040</span>
+  <a class="tab on desktop-only" href="./">Swarm map</a>
+  <span class="desktop-only" style="font-size:11px;color:var(--mut)">read-only · OG launch #1040</span>
   <span id="mode" style="font-size:12px"><span class="dot"></span>LIVE</span>
-  <span class="mut" id="blk" style="font-size:12px;color:var(--mut)"></span>
+  <span class="mut desktop-only" id="blk" style="font-size:12px;color:var(--mut)"></span>
   <span class="sp"></span>
   <button id="btnReplay" title="Replay every activation, upgrade, exit and swap since launch, sped up">▶ Replay from launch</button>
-  <select id="rpSpeed" title="Replay length"><option value="45">45s</option><option value="90" selected>90s</option><option value="180">3 min</option></select>
-  <input id="hlAddr" placeholder="highlight a wallet 0x… (empty = none)" size="22">
+  <button id="btnMenu" class="mobile-only" aria-expanded="false" aria-controls="controls">Menu</button>
+  <div id="controls">
+  <label class="mobile-only" for="rpSpeed">Replay length</label>
+  <select id="rpSpeed" aria-label="Replay length" title="Replay length"><option value="45">45s</option><option value="90" selected>90s</option><option value="180">3 min</option></select>
+  <label class="mobile-only" id="walletLabel" for="hlAddr">Highlight wallet</label>
+  <input id="hlAddr" aria-label="Highlight wallet" aria-describedby="walletError" placeholder="highlight a wallet 0x… (empty = none)" size="22" autocomplete="off" spellcheck="false" autocapitalize="off">
+  <p id="walletError" class="mobile-only" role="status" hidden></p>
   <button id="btnFit" title="Reset zoom / pan (or double-click)">⤢ Fit</button>
+  <p class="mobile-only control-help">Drag to pan · pinch to zoom · double-tap to fit. Tap a Pepe for details. Clear the wallet field to remove its highlight.</p>
+  <p class="mobile-only control-help">Read-only · OG launch #1040</p>
+  </div>
 </div>
 
+<div id="sheet">
+  <button id="sheetToggle" class="mobile-only" aria-expanded="false" aria-controls="sheetBody" aria-label="Expand Stats, Holders and Events">
+    <span><small>Active Pepes</small><strong id="mActive">–</strong></span>
+    <span><small>Total weight</small><strong id="mWeight">–</strong></span>
+    <span><small>Backing · ETH</small><strong id="mBack">–</strong></span>
+    <span id="sheetChevron" aria-hidden="true">⌃</span>
+  </button>
+  <div id="sheetBody">
+  <div id="sheetTabs" class="mobile-only" role="tablist" aria-label="Swarm details">
+    <button id="tabStats" role="tab" aria-selected="true" aria-controls="stats">Stats</button>
+    <button id="tabHolders" role="tab" aria-selected="false" aria-controls="lb" tabindex="-1">Holders</button>
+    <button id="tabEvents" role="tab" aria-selected="false" aria-controls="tick" tabindex="-1">Events</button>
+  </div>
+  <div id="sheetPanels">
 <div id="stats" class="glass">
   <div class="k">Active Pepes</div><div class="v" id="hActive">–</div>
   <div class="k">L1 / L2 / L3</div><div class="v" id="hLevels">–</div>
@@ -92,12 +179,15 @@
 
 <div id="lb" class="glass"><h3>Top holders · by weight</h3><div id="lbList"></div></div>
 <div id="tick" class="glass"><h3>Live events</h3><div id="tickList"></div></div>
+  </div>
+  </div>
+</div>
 <div id="legend" class="glass">
   <span><span class="sw" style="background:var(--l1);box-shadow:0 0 8px var(--l1)"></span>L1 · w1</span>
   <span><span class="sw" style="background:var(--l2);box-shadow:0 0 8px var(--l2)"></span>L2 · w2</span>
   <span><span class="sw" style="background:var(--l3);box-shadow:0 0 8px var(--l3)"></span>L3 · w4</span>
   <span><span class="sw" style="background:var(--gold);box-shadow:0 0 8px var(--gold)"></span>highlighted wallet</span>
-  <span style="color:var(--mut)">brighter = more pending ETH · center = OG pool → distributor · right edge = auction portal · scroll to zoom, drag to pan</span>
+  <span style="color:var(--mut)">brighter = more pending ETH · center = OG pool → distributor · right edge = auction portal · <span class="desktop-only">scroll to zoom, drag to pan</span><span class="mobile-only">pinch to zoom, drag to pan, double-tap to fit</span></span>
 </div>
 <div id="tip" class="glass"></div>
 <div id="rpBar"><i></i></div><div id="rpLbl"></div>
