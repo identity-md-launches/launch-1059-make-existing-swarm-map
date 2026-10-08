@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OG · Swarm map</title>
+<style>
+  :root { --fg:#e8f1ff; --mut:#7d8aa6; --l1:#39ff9f; --l2:#4cc3ff; --l3:#ff5cf0; --gold:#ffd166; --glass:rgba(10,14,28,.62); --line:rgba(120,160,255,.18); }
+  * { box-sizing:border-box; }
+  html, body { margin:0; height:100%; overflow:hidden; background:#03040a; color:var(--fg); font:13px/1.4 system-ui,Segoe UI,Roboto,sans-serif; }
+  canvas#c { position:fixed; inset:0; width:100vw; height:100vh; display:block; cursor:grab; }
+  canvas#c.drag { cursor:grabbing; }
+  .glass { position:fixed; background:var(--glass); border:1px solid var(--line); border-radius:12px; backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px); box-shadow:0 0 30px rgba(60,120,255,.08), inset 0 0 20px rgba(80,140,255,.04); }
+  #top { top:12px; left:12px; right:12px; height:48px; display:flex; align-items:center; gap:14px; padding:0 14px; }
+  #top h1 { margin:0; font-size:15px; letter-spacing:.18em; font-weight:700; text-transform:uppercase; background:linear-gradient(90deg,#39ff9f,#4cc3ff 45%,#ff5cf0); -webkit-background-clip:text; background-clip:text; color:transparent; text-shadow:0 0 18px rgba(76,195,255,.25); }
+  #top .sp { flex:1; }
+  a { color:#7cc8ff; text-decoration:none; } a:hover { text-decoration:underline; }
+  .tab { padding:6px 12px; border-radius:8px; border:1px solid var(--line); color:var(--fg); font-size:12px; }
+  .tab.on { background:rgba(76,195,255,.14); border-color:rgba(76,195,255,.5); box-shadow:0 0 12px rgba(76,195,255,.25); }
+  button, input, select { background:rgba(20,28,50,.8); color:var(--fg); border:1px solid var(--line); border-radius:8px; padding:6px 10px; font:inherit; font-size:12px; }
+  button { cursor:pointer; } button:hover { border-color:rgba(76,195,255,.6); box-shadow:0 0 10px rgba(76,195,255,.25); }
+  button.on { background:rgba(255,92,240,.16); border-color:rgba(255,92,240,.6); }
+  .dot { width:8px; height:8px; border-radius:50%; background:#39ff9f; box-shadow:0 0 10px #39ff9f; display:inline-block; margin-right:6px; animation:bl 1.6s infinite; }
+  .dot.rp { background:#ff5cf0; box-shadow:0 0 10px #ff5cf0; }
+  @keyframes bl { 50% { opacity:.35; } }
+  #stats { top:72px; left:12px; width:250px; padding:12px 14px; }
+  .k { color:var(--mut); font-size:11px; text-transform:uppercase; letter-spacing:.08em; }
+  .v { font-size:17px; font-weight:650; font-variant-numeric:tabular-nums; margin-bottom:8px; }
+  .v small { font-size:11px; color:var(--mut); font-weight:400; }
+  .l1 { color:var(--l1); text-shadow:0 0 8px rgba(57,255,159,.5); } .l2 { color:var(--l2); text-shadow:0 0 8px rgba(76,195,255,.5); } .l3 { color:var(--l3); text-shadow:0 0 8px rgba(255,92,240,.5); }
+  .gold { color:var(--gold); text-shadow:0 0 8px rgba(255,209,102,.5); }
+  .hr { height:1px; background:var(--line); margin:6px 0 10px; }
+  #lb { top:72px; right:12px; width:290px; padding:12px 14px; }
+  #lb h3, #tick h3 { margin:0 0 8px; font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--mut); font-weight:600; }
+  .lbr { display:grid; grid-template-columns:18px 1fr 44px 52px; gap:6px; align-items:center; padding:4px 6px; border-radius:7px; cursor:pointer; font-variant-numeric:tabular-nums; }
+  .lbr:hover { background:rgba(76,195,255,.08); }
+  .lbr.me { background:rgba(255,209,102,.08); outline:1px solid rgba(255,209,102,.35); }
+  .bar { grid-column:1 / -1; height:3px; border-radius:2px; background:rgba(255,255,255,.06); overflow:hidden; margin-top:-2px; }
+  .bar i { display:block; height:100%; background:linear-gradient(90deg,#4cc3ff,#ff5cf0); box-shadow:0 0 8px #ff5cf0; }
+  #tick { right:12px; bottom:12px; width:390px; max-height:40vh; padding:12px 14px; overflow:hidden; }
+  #tickList { display:flex; flex-direction:column; gap:3px; font:12px/1.45 ui-monospace,Consolas,monospace; }
+  .ev { display:flex; gap:8px; align-items:baseline; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; animation:in .5s ease-out; }
+  @keyframes in { from { opacity:0; transform:translateX(16px); } to { opacity:1; transform:none; } }
+  .ev .t { color:var(--mut); font-size:11px; min-width:58px; }
+  .tag { font-weight:700; font-size:10px; padding:0 5px; border-radius:4px; letter-spacing:.06em; }
+  .tag.buy { color:#03140a; background:#39ff9f; box-shadow:0 0 8px #39ff9f; } .tag.sell { color:#1a0505; background:#ff6b6b; }
+  .tag.act { color:#03101a; background:#4cc3ff; box-shadow:0 0 8px #4cc3ff; } .tag.up { color:#1a0418; background:#ff5cf0; box-shadow:0 0 8px #ff5cf0; }
+  .tag.exit { color:#1a1405; background:#ffd166; }
+  #tip { position:fixed; pointer-events:none; display:none; padding:10px 12px; min-width:190px; z-index:20; font-size:12px; }
+  #tip img { width:56px; height:56px; image-rendering:pixelated; border-radius:8px; float:right; margin-left:10px; border:1px solid var(--line); }
+  #legend { left:12px; bottom:12px; padding:10px 14px; display:flex; gap:14px; align-items:center; font-size:12px; flex-wrap:wrap; max-width:calc(100vw - 430px); }
+  .sw { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:5px; vertical-align:-1px; }
+  #loading { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; flex-direction:column; gap:10px; font-size:13px; color:var(--mut); letter-spacing:.2em; text-transform:uppercase; pointer-events:none; }
+  #loading .ring { width:46px; height:46px; border-radius:50%; border:2px solid rgba(76,195,255,.2); border-top-color:#4cc3ff; animation:sp 1s linear infinite; box-shadow:0 0 20px rgba(76,195,255,.3); }
+  @keyframes sp { to { transform:rotate(360deg); } }
+  #rpBar { position:fixed; left:50%; transform:translateX(-50%); top:70px; width:360px; height:4px; border-radius:2px; background:rgba(255,255,255,.08); display:none; overflow:hidden; }
+  #rpBar i { display:block; height:100%; width:0; background:linear-gradient(90deg,#4cc3ff,#ff5cf0); box-shadow:0 0 10px #ff5cf0; }
+  #rpLbl { position:fixed; left:50%; transform:translateX(-50%); top:78px; font-size:11px; color:var(--mut); letter-spacing:.1em; display:none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="loading"><div class="ring"></div><div id="loadMsg">connecting to the swarm…</div></div>
+
+<div id="top" class="glass">
+  <h1>Swarm map</h1>
+  <a class="tab on" href="./">Swarm map</a>
+  <span style="font-size:11px;color:var(--mut)">read-only · OG launch #1040</span>
+  <span id="mode" style="font-size:12px"><span class="dot"></span>LIVE</span>
+  <span class="mut" id="blk" style="font-size:12px;color:var(--mut)"></span>
+  <span class="sp"></span>
+  <button id="btnReplay" title="Replay every activation, upgrade, exit and swap since launch, sped up">▶ Replay from launch</button>
+  <select id="rpSpeed" title="Replay length"><option value="45">45s</option><option value="90" selected>90s</option><option value="180">3 min</option></select>
+  <input id="hlAddr" placeholder="highlight a wallet 0x… (empty = none)" size="22">
+  <button id="btnFit" title="Reset zoom / pan (or double-click)">⤢ Fit</button>
+</div>
+
+<div id="stats" class="glass">
+  <div class="k">Active Pepes</div><div class="v" id="hActive">–</div>
+  <div class="k">L1 / L2 / L3</div><div class="v" id="hLevels">–</div>
+  <div class="k">Total weight</div><div class="v" id="hWeight">–</div>
+  <div class="k">ETH per weight</div><div class="v" id="hEpw">–</div>
+  <div class="k">Total backing <small>credited + backlog</small></div><div class="v" id="hBack">–</div>
+  <div class="k">Backlog stream ends in</div><div class="v" id="hCount">–</div>
+  <div class="hr"></div>
+  <div class="k">OG price</div><div class="v" id="hPrice">–</div>
+  <div class="k">ETH / USD <small>Chainlink</small></div><div class="v" id="hUsd">–</div>
+  <div class="hr"></div>
+  <div class="k">Highlighted <span id="hHlAddr"></span></div><div class="v gold" id="hMe">–</div>
+</div>
+
+<div id="lb" class="glass"><h3>Top holders · by weight</h3><div id="lbList"></div></div>
+<div id="tick" class="glass"><h3>Live events</h3><div id="tickList"></div></div>
+<div id="legend" class="glass">
+  <span><span class="sw" style="background:var(--l1);box-shadow:0 0 8px var(--l1)"></span>L1 · w1</span>
+  <span><span class="sw" style="background:var(--l2);box-shadow:0 0 8px var(--l2)"></span>L2 · w2</span>
+  <span><span class="sw" style="background:var(--l3);box-shadow:0 0 8px var(--l3)"></span>L3 · w4</span>
+  <span><span class="sw" style="background:var(--gold);box-shadow:0 0 8px var(--gold)"></span>highlighted wallet</span>
+  <span style="color:var(--mut)">brighter = more pending ETH · center = OG pool → distributor · right edge = auction portal · scroll to zoom, drag to pan</span>
+</div>
+<div id="tip" class="glass"></div>
+<div id="rpBar"><i></i></div><div id="rpLbl"></div>
+
+<script src="ethers.umd.min.js"></script>
+<script src="swarm.js"></script>
+</body>
+</html>
